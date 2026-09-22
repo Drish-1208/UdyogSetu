@@ -127,10 +127,34 @@ def generate_checklist(profile: BusinessProfile, db: Session = Depends(get_db)):
         "total_approvals_required": len(final_checklist),
         "required_approvals": final_checklist
     }
+import json
+
+def analyze_document_with_ai(document_type: str, file_name: str):
+    """
+    In the final hackathon version, you will pass the file bytes to 
+    your OpenAI or Google AI Pro API here.
+    """
+    
+    # We prompt the AI to return this exact JSON structure:
+    mock_ai_response = """
+    {
+        "is_valid": true,
+        "confidence_score": 0.96,
+        "extracted_data": {
+            "document_number": "MH-2026-XYZ890",
+            "issue_date": "2023-05-14",
+            "expiry_date": "2028-05-13",
+            "signatures_present": true
+        },
+        "critical_flags": []
+    }
+    """
+    # Convert the text string into a Python dictionary
+    return json.loads(mock_ai_response)
 @app.post("/documents/upload/")
 async def upload_document(
     email: str = Form(...),
-    document_type: str = Form(...), # e.g., 'PAN', 'Factory_Layout'
+    document_type: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -139,29 +163,37 @@ async def upload_document(
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    # 2. Security Check: Only allow PDFs and standard images
+    # 2. Security Check
     allowed_types = ["application/pdf", "image/jpeg", "image/png"]
     if file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF, JPEG, or PNG allowed.")
+        raise HTTPException(status_code=400, detail="Invalid file type.")
 
-    # 3. Read the file (In a real app, you would save this to AWS S3 or Supabase Storage)
-    # For now, we pretend we uploaded it to a cloud bucket and get a fake link
-    fake_cloud_url = f"https://my-cloud-bucket.com/uploads/{file.filename}"
+    fake_cloud_url = f"https://s3-bucket.com/uploads/{file.filename}"
     
-    # 4. Save the document record in the database
+    # 3. Run the AI Scrutiny
+    ai_analysis = analyze_document_with_ai(document_type, file.filename)
+    
+    # 4. Auto-Verification Logic
+    # If the AI is highly confident and found no missing signatures, instantly verify it!
+    auto_status = "Pending"
+    if ai_analysis["is_valid"] and ai_analysis["confidence_score"] > 0.90:
+        auto_status = "Verified"
+
+    # 5. Save everything to the database
     new_document = models.Document(
         user_id=user.id,
         document_type=document_type,
         file_url=fake_cloud_url,
-        verification_status="Pending" 
-        # We will add the AI extraction magic here in the next step!
+        verification_status=auto_status,
+        ai_extracted_metadata=ai_analysis # Saves the entire JSON dictionary!
     )
     
     db.add(new_document)
     db.commit()
     
     return {
-        "message": f"Successfully uploaded {file.filename}",
+        "message": f"Successfully processed {file.filename}",
         "document_type": document_type,
-        "status": "Pending AI Validation"
+        "status": auto_status,
+        "extracted_metadata": ai_analysis
     }

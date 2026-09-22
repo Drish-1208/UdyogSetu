@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 # Import our database tools and recipe book
 from database import SessionLocal
 import models
+import uuid
 
 app = FastAPI()
 
@@ -16,11 +17,21 @@ class UserCreate(BaseModel):
     email: str
     password: str
 
+    
+
 class BusinessProfile(BaseModel):
     email: str
     sector: str
     employee_count: int
     has_hazardous_chemicals: bool
+
+class ApplicationCreate(BaseModel):
+    email: str
+
+class DepartmentReview(BaseModel):
+    approval_id: str  # The specific UUID of the department's ticket
+    new_status: str   # e.g., "Approved", "Rejected", "Need More Info"
+    comments: str     # e.g., "Fire exits are not marked clearly"
 
 # ==========================================
 # 2. Database Dependency
@@ -197,3 +208,105 @@ async def upload_document(
         "status": auto_status,
         "extracted_metadata": ai_analysis
     }
+
+@app.post("/applications/submit/")
+def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
+    # 1. Find the user and their checklist
+    user = db.query(models.User).filter(models.User.email == data.email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    
+    if not user.business_profile or "sector" not in user.business_profile:
+        raise HTTPException(status_code=400, detail="Please complete the onboarding checklist first.")
+
+    # 2. Re-run rules engine to get required approvals
+    required_approvals = {"Company Registration (MCA)", "GST Registration", "Shops & Establishment License"}
+    sector_approvals = INDUSTRY_REQUIREMENTS.get(user.business_profile.get("sector", "").lower(), [])
+    required_approvals.update(sector_approvals)
+    
+    # 3. Create the Master Application
+    new_app = models.Application(
+        user_id=user.id,
+        status="Under Review"
+    )
+    db.add(new_app)
+    db.commit()
+    db.refresh(new_app)
+
+    # 4. Generate parallel Department Approval tickets
+    for approval_name in required_approvals:
+        # We use 'name' here to perfectly match your models.py Department class
+        dept = db.query(models.Department).filter(models.Department.name == approval_name).first()
+        if not dept:
+            dept = models.Department(name=approval_name)
+            db.add(dept)
+            db.commit()
+            db.refresh(dept)
+
+        dept_ticket = models.DepartmentApproval(
+            application_id=new_app.id,
+            department_id=dept.id,         
+            status="Pending",
+            official_notes="Awaiting officer review." 
+        )
+        db.add(dept_ticket)
+    
+    db.commit()
+
+    return {
+        "message": "Application submitted successfully to all departments in parallel!",
+        "application_id": str(new_app.id),
+        "departments_notified": len(required_approvals)
+    }
+
+
+
+
+
+@app.get("/dashboard/{email}")
+def get_applicant_dashboard(email: str, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    # Get their most recent application
+    application = db.query(models.Application).filter(models.Application.user_id == user.id).order_by(models.Application.created_at.desc()).first()
+    
+    if not application:
+        return {"message": "No applications found.", "dashboard": []}
+
+    # Fetch all parallel department tickets
+    department_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.application_id == application.id).all()
+
+    # Format the data for the frontend dashboard
+    dashboard_data = [
+        {
+            "ticket_id": str(ticket.id),
+            "department": ticket.department.name, # Uses the relationship magic!
+            "status": ticket.status,
+            "officer_comments": ticket.official_notes, # Matches your model!
+            "last_updated": ticket.updated_at
+        }
+        for ticket in department_tickets
+    ]
+
+    return {
+        "overall_status": application.status,
+        "total_progress": f"{len([t for t in department_tickets if t.status == 'Approved'])}/{len(department_tickets)} Completed",
+        "department_breakdown": dashboard_data
+    }
+
+
+@app.patch("/departments/review/")
+def official_review(review: DepartmentReview, db: Session = Depends(get_db)):
+    # This endpoint is used by the Government Official's frontend
+    ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == review.approval_id).first()
+    
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Approval ticket not found.")
+        
+    ticket.status = review.new_status
+    ticket.official_notes = review.comments # Fixed to match your model!
+    db.commit()
+    
+    return {"message": f"Ticket for {ticket.department.name} updated to {review.new_status}"}

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 import models
 import uuid
+import auth
 
 app = FastAPI()
 
@@ -14,6 +15,10 @@ app = FastAPI()
 # ==========================================
 class UserCreate(BaseModel):
     full_name: str
+    email: str
+    password: str
+
+class UserLogin(BaseModel):
     email: str
     password: str
 
@@ -79,13 +84,12 @@ def read_root():
 
 @app.post("/users/")
 def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
-    
-    # Catch duplicate emails to prevent 500 Server Errors!
+    # 1. Catch duplicate emails first!
     existing_user = db.query(models.User).filter(models.User.email == user_data.email).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="This email is already registered.")
 
-    # Create dummy "entrepreneur" role if it doesn't exist
+    # 2. Create or fetch the "entrepreneur" role
     role = db.query(models.Role).filter(models.Role.role_name == "entrepreneur").first()
     if not role:
         role = models.Role(role_name="entrepreneur")
@@ -93,18 +97,21 @@ def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(role)
 
-    # Create the actual user
+    # 3. Scramble the password using auth.py
+    hashed_pwd = auth.get_password_hash(user_data.password)
+    
+    # 4. Create the actual user with the secure password
     new_user = models.User(
         full_name=user_data.full_name,
         email=user_data.email,
-        password_hash=user_data.password, # In a real app, hash this!
+        password_hash=hashed_pwd, # Saves the scrambled version!
         role_id=role.id
     )
     
     db.add(new_user)
     db.commit()
     
-    return {"message": "Success! User saved to Database.", "name": new_user.full_name}
+    return {"message": "Success! User securely saved to Database.", "name": new_user.full_name}
 
 
 @app.post("/onboarding/")
@@ -261,7 +268,23 @@ def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
 
 
 
-
+@app.post("/login/")
+def login_user(user_credentials: UserLogin, db: Session = Depends(get_db)):
+    # 1. Find the user by email
+    user = db.query(models.User).filter(models.User.email == user_credentials.email).first()
+    
+    # 2. Check if user exists AND password is correct
+    if not user or not auth.verify_password(user_credentials.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    
+    # 3. Create the JWT Token
+    access_token = auth.create_access_token(data={"sub": user.email})
+    
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "message": "Login successful!"
+    }
 
 @app.get("/dashboard/{email}")
 def get_applicant_dashboard(email: str, db: Session = Depends(get_db)):

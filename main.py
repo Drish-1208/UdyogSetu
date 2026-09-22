@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -126,4 +126,42 @@ def generate_checklist(profile: BusinessProfile, db: Session = Depends(get_db)):
         "message": "Checklist generated using scalable Rules Engine!",
         "total_approvals_required": len(final_checklist),
         "required_approvals": final_checklist
+    }
+@app.post("/documents/upload/")
+async def upload_document(
+    email: str = Form(...),
+    document_type: str = Form(...), # e.g., 'PAN', 'Factory_Layout'
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    # 1. Verify the user exists
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    # 2. Security Check: Only allow PDFs and standard images
+    allowed_types = ["application/pdf", "image/jpeg", "image/png"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF, JPEG, or PNG allowed.")
+
+    # 3. Read the file (In a real app, you would save this to AWS S3 or Supabase Storage)
+    # For now, we pretend we uploaded it to a cloud bucket and get a fake link
+    fake_cloud_url = f"https://my-cloud-bucket.com/uploads/{file.filename}"
+    
+    # 4. Save the document record in the database
+    new_document = models.Document(
+        user_id=user.id,
+        document_type=document_type,
+        file_url=fake_cloud_url,
+        verification_status="Pending" 
+        # We will add the AI extraction magic here in the next step!
+    )
+    
+    db.add(new_document)
+    db.commit()
+    
+    return {
+        "message": f"Successfully uploaded {file.filename}",
+        "document_type": document_type,
+        "status": "Pending AI Validation"
     }

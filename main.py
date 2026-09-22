@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm # <-- Add this new import
+import jwt # <-- Add this to decode the token
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -48,6 +50,29 @@ def get_db():
     finally:
         db.close()
 
+# This tells FastAPI where users get their tokens
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+# THE BOUNCER: This function checks the token, decodes it, and finds the secure user
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials, please log in again.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        # Decode the token using your secret key from auth.py
+        payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except Exception:
+        raise credentials_exception
+        
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if user is None:
+        raise credentials_exception
+    return user
 # ==========================================
 # 3. Rules Engine Data (Scalable Logic)
 # ==========================================
@@ -269,15 +294,15 @@ def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
 
 
 @app.post("/login/")
-def login_user(user_credentials: UserLogin, db: Session = Depends(get_db)):
-    # 1. Find the user by email
-    user = db.query(models.User).filter(models.User.email == user_credentials.email).first()
+def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # Swagger UI's form always calls the field 'username', so we map it to our 'email' column
+    user = db.query(models.User).filter(models.User.email == form_data.username).first()
     
-    # 2. Check if user exists AND password is correct
-    if not user or not auth.verify_password(user_credentials.password, user.password_hash):
+    # Check if user exists AND password is correct
+    if not user or not auth.verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     
-    # 3. Create the JWT Token
+    # Create the JWT Token
     access_token = auth.create_access_token(data={"sub": user.email})
     
     return {
@@ -286,40 +311,36 @@ def login_user(user_credentials: UserLogin, db: Session = Depends(get_db)):
         "message": "Login successful!"
     }
 
-@app.get("/dashboard/{email}")
-def get_applicant_dashboard(email: str, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == email).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-
+@app.get("/dashboard/my-status/")
+def get_secure_dashboard(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Look how clean this is! We already know the user from the token.
+    
     # Get their most recent application
-    application = db.query(models.Application).filter(models.Application.user_id == user.id).order_by(models.Application.created_at.desc()).first()
+    application = db.query(models.Application).filter(models.Application.user_id == current_user.id).order_by(models.Application.created_at.desc()).first()
     
     if not application:
-        return {"message": "No applications found.", "dashboard": []}
+        return {"message": f"Welcome {current_user.full_name}! No applications found yet.", "dashboard": []}
 
     # Fetch all parallel department tickets
     department_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.application_id == application.id).all()
 
-    # Format the data for the frontend dashboard
     dashboard_data = [
         {
             "ticket_id": str(ticket.id),
-            "department": ticket.department.name, # Uses the relationship magic!
+            "department": ticket.department.name, 
             "status": ticket.status,
-            "officer_comments": ticket.official_notes, # Matches your model!
+            "officer_comments": ticket.official_notes, 
             "last_updated": ticket.updated_at
         }
         for ticket in department_tickets
     ]
 
     return {
+        "applicant": current_user.full_name,
         "overall_status": application.status,
         "total_progress": f"{len([t for t in department_tickets if t.status == 'Approved'])}/{len(department_tickets)} Completed",
         "department_breakdown": dashboard_data
     }
-
-
 @app.patch("/departments/review/")
 def official_review(review: DepartmentReview, db: Session = Depends(get_db)):
     # This endpoint is used by the Government Official's frontend
@@ -333,3 +354,33 @@ def official_review(review: DepartmentReview, db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": f"Ticket for {ticket.department.name} updated to {review.new_status}"}
+@app.get("/admin/statistics/")
+def get_government_statistics(db: Session = Depends(get_db)):
+    """
+    Provides real-time analytics for the Maharashtra State Dashboard.
+    (In production, you would lock this down to 'admin' roles only using the token)
+    """
+    total_users = db.query(models.User).count()
+    total_applications = db.query(models.Application).count()
+    
+    # Check ticket statuses across all departments
+    pending_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.status == "Pending").count()
+    approved_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.status == "Approved").count()
+    rejected_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.status == "Rejected").count()
+
+    total_tickets = pending_tickets + approved_tickets + rejected_tickets
+    approval_rate = round((approved_tickets / total_tickets * 100), 1) if total_tickets > 0 else 0
+
+    return {
+        "state_overview": {
+            "total_registered_businesses": total_users,
+            "total_master_applications": total_applications
+        },
+        "department_bottlenecks": {
+            "pending_reviews": pending_tickets,
+            "approved_licenses": approved_tickets,
+            "rejected_applications": rejected_tickets,
+            "overall_approval_rate": f"{approval_rate}%"
+        },
+        "message": "Real-time state analytics generated successfully."
+    }

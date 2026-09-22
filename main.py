@@ -27,7 +27,6 @@ class UserLogin(BaseModel):
     
 
 class BusinessProfile(BaseModel):
-    email: str
     sector: str
     employee_count: int
     has_hazardous_chemicals: bool
@@ -140,29 +139,27 @@ def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
 
 
 @app.post("/onboarding/")
-def generate_checklist(profile: BusinessProfile, db: Session = Depends(get_db)):
-    
+def generate_checklist(
+    profile: BusinessProfile, 
+    current_user: models.User = Depends(get_current_user), # The Bouncer handles identity!
+    db: Session = Depends(get_db)
+):
     # Base approvals everyone needs
     required_approvals = {"Company Registration (MCA)", "GST Registration", "Shops & Establishment License"}
     
-    # Dynamic Matrix Lookup (O(1) time complexity)
+    # Dynamic Matrix Lookup 
     sector_approvals = INDUSTRY_REQUIREMENTS.get(profile.sector.lower(), [])
     required_approvals.update(sector_approvals)
     
-    # Dynamic Conditional Evaluator (O(N) time complexity)
+    # Dynamic Conditional Evaluator 
     for rule in CONDITIONAL_REQUIREMENTS:
         if rule["evaluator"](profile):
             required_approvals.update(rule["approvals"])
             
-    # Convert the set back to a list for JSON response
     final_checklist = list(required_approvals)
         
-    # Save to JSONB in database
-    user = db.query(models.User).filter(models.User.email == profile.email).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found. Please register first.")
-        
-    user.business_profile = profile.model_dump() 
+    # Directly update the user attached to the secure token
+    current_user.business_profile = profile.model_dump() 
     db.commit()
         
     return {

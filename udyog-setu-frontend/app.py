@@ -285,13 +285,18 @@ with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/Seal_of_Maharashtra.svg/200px-Seal_of_Maharashtra.svg.png", width=100)
     st.title("Navigation")
     
-    if st.session_state["access_token"]:
+    if st.session_state.get("access_token"):
         if st.button("My Dashboard"):
             st.session_state["page"] = "applicant"
         if st.button("State Analytics"):
             st.session_state["page"] = "admin"
+            
+        # 🔒 SECURITY FIX: Completely wipe session memory on logout
         if st.button("Logout", type="primary"):
             st.session_state["access_token"] = None
+            st.session_state["user_name"] = None
+            st.session_state["vault"] = []
+            st.session_state["page"] = "login"
             st.rerun()
     else:
         st.session_state["page"] = "login"

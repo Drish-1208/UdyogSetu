@@ -190,19 +190,35 @@ import json
 # Configure the live AI connection
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
+# 📜 NEW: Dynamic MAITRI Compliance Rules
+DOCUMENT_RULES = {
+    "Company Registration (MCA)": "Must contain a 21-character Corporate Identification Number (CIN) and be issued by the Ministry of Corporate Affairs or Registrar of Companies.",
+    "GST Registration": "Must contain a 15-character GSTIN. Ensure it explicitly states 'Goods and Services Tax'.",
+    "Fire NOC": "Must be issued by Maharashtra Fire Services or a local municipal fire brigade. Must clearly state 'No Objection Certificate' for fire safety.",
+    "Environmental Clearance": "Must be issued by the Maharashtra Pollution Control Board (MPCB) or SEIAA. Look for 'Consent to Establish' or 'Consent to Operate' clauses.",
+    "Identity Proof": "Valid IDs include PAN Card, Passport, or Voter ID. Note: Indian PAN Cards do not have expiry dates.",
+    "Property Lease Agreement": "Must include names of lessor and lessee, property address, and ideally a Maharashtra stamp duty seal or e-registration mark."
+}
+
 def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: str):
-    """Sends actual file bytes to Gemini 3.6 Flash using strict Pydantic Structured Outputs."""
+    """Sends file bytes to Gemini using Pydantic Outputs and Dynamic Legal Rules."""
     try:
-        model = genai.GenerativeModel('gemini-3.6-flash') 
+        model = genai.GenerativeModel('gemini-3.6-flash')
+        
+        # Fetch the specific legal rule for the requested document type
+        specific_rule = DOCUMENT_RULES.get(document_type, "Perform standard government document verification.")
         
         prompt = f"""
-        You are a strict, automated Screening Agent for the Maharashtra Government.
+        You are an elite, automated Screening Agent for the MAITRI Single Window Clearance portal of the Maharashtra Government.
         The user claims this document is a: '{document_type}'.
         
-        YOUR SCREENING RULES:
-        1. STRICT MATCH: If the document is clearly NOT a '{document_type}' (e.g., they uploaded an Identity Proof but selected Fire NOC), set is_valid to false.
-        2. QUALITY CHECK: If the image is heavily blurred, cut off, or unreadable, set is_valid to false.
-        3. SMART DATA EXTRACTION: Extract the ID number and dates. Remember that Indian PAN cards do not have expiry dates. 
+        YOUR SPECIFIC SCREENING RULE FOR THIS DOCUMENT:
+        {specific_rule}
+        
+        GENERAL RULES:
+        1. STRICT MATCH: If the document violates the specific rule above, or is clearly NOT a '{document_type}', you MUST set is_valid to false and explain exactly why in the screening_status.
+        2. ANTI-FRAUD CHECK: If the image is heavily blurred, cut off, unreadable, or shows signs of digital tampering (e.g., mismatched fonts), set is_valid to false.
+        3. SMART DATA EXTRACTION: Extract the primary ID/Certificate number, issue date, and expiry date if present. 
         """
         
         response = model.generate_content(
@@ -210,11 +226,10 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
                 response_schema=DocumentVerificationResult,
-                temperature=0.1 # Low temperature for analytical strictness
+                temperature=0.0 # Absolute zero creativity - strict compliance mode
             )
         )
         
-        # Because of the schema, we no longer need to strip markdown or guess the format
         return json.loads(response.text)
         
     except Exception as e:

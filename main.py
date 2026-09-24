@@ -1,3 +1,6 @@
+import google.generativeai as genai
+import os
+import json
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm # <-- Add this new import
 import jwt # <-- Add this to decode the token
@@ -169,28 +172,56 @@ def generate_checklist(
     }
 import json
 
-def analyze_document_with_ai(document_type: str, file_name: str):
-    """
-    In the final hackathon version, you will pass the file bytes to 
-    your OpenAI or Google AI Pro API here.
-    """
-    
-    # We prompt the AI to return this exact JSON structure:
-    mock_ai_response = """
-    {
-        "is_valid": true,
-        "confidence_score": 0.96,
-        "extracted_data": {
-            "document_number": "MH-2026-XYZ890",
-            "issue_date": "2023-05-14",
-            "expiry_date": "2028-05-13",
-            "signatures_present": true
-        },
-        "critical_flags": []
-    }
-    """
-    # Convert the text string into a Python dictionary
-    return json.loads(mock_ai_response)
+# Configure the live AI connection
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: str):
+    """Sends actual file bytes to Gemini for strict, smart screening."""
+    try:
+        model = genai.GenerativeModel('gemini-3.6-flash') # Or 3.6-flash if you are using that
+        
+        prompt = f"""
+        You are a strict, automated Screening Agent for the Maharashtra Government.
+        The user claims this document is a: '{document_type}'.
+        
+        YOUR SCREENING RULES:
+        1. STRICT MATCH: If the document is clearly NOT a {document_type} (e.g. they uploaded a PAN card but selected MCA Registration), you MUST set is_valid to false.
+        2. QUALITY CHECK: If the image is heavily blurred, cut off, or unreadable, set is_valid to false.
+        3. SMART EXTRACTION: Extract standard fields. Note: Indian PAN Cards do NOT have expiry dates (set to null). Aadhaar cards require both sides or a full e-Aadhaar.
+        
+        Respond ONLY with a valid JSON object matching this exact structure, with no markdown formatting:
+        {{
+            "is_valid": true,
+            "confidence_score": 0.95,
+            "screening_status": "Passed AI Screening" or "Rejected: [Specific Reason]",
+            "extracted_data": {{
+                "document_number": "extracted number or null",
+                "issue_date": "YYYY-MM-DD or null",
+                "expiry_date": "YYYY-MM-DD or null"
+            }},
+            "critical_flags": ["list of issues, if any"]
+        }}
+        """
+        
+        response = model.generate_content([
+            prompt,
+            {"mime_type": mime_type, "data": file_bytes}
+        ])
+        
+        raw_text = response.text.replace('```json', '').replace('```', '').strip()
+        return json.loads(raw_text)
+        
+    except Exception as e:
+        print(f"AI Engine Error: {e}")
+        return {
+            "is_valid": False, 
+            "confidence_score": 0.0, 
+            "screening_status": "Processing Failed",
+            "extracted_data": {}, 
+            "critical_flags": ["AI processing failed or file unreadable."]
+        }
+
+
 @app.post("/documents/upload/")
 async def upload_document(
     email: str = Form(...),
@@ -198,37 +229,49 @@ async def upload_document(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    # 1. Verify the user exists
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    # 2. Security Check
     allowed_types = ["application/pdf", "image/jpeg", "image/png"]
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Invalid file type.")
 
+    file_bytes = await file.read()
+    
+    # Run the LIVE AI Screening
+    ai_analysis = analyze_document_with_ai(document_type, file_bytes, file.content_type)
+    
+    # 🚀 NEW LOGIC: AI is a Gatekeeper, not the final approver.
+    auto_status = "Rejected"
+    if ai_analysis.get("is_valid") and ai_analysis.get("confidence_score", 0) > 0.85:
+        auto_status = "In Review" # Passed to Human Official
+
     fake_cloud_url = f"https://s3-bucket.com/uploads/{file.filename}"
     
-    # 3. Run the AI Scrutiny
-    ai_analysis = analyze_document_with_ai(document_type, file.filename)
-    
-    # 4. Auto-Verification Logic
-    # If the AI is highly confident and found no missing signatures, instantly verify it!
-    auto_status = "Pending"
-    if ai_analysis["is_valid"] and ai_analysis["confidence_score"] > 0.90:
-        auto_status = "Verified"
-
-    # 5. Save everything to the database
     new_document = models.Document(
         user_id=user.id,
         document_type=document_type,
         file_url=fake_cloud_url,
         verification_status=auto_status,
-        ai_extracted_metadata=ai_analysis # Saves the entire JSON dictionary!
+        ai_extracted_metadata=ai_analysis
     )
-    
     db.add(new_document)
+    
+    # Sync with Department Tickets
+    pending_tickets = db.query(models.DepartmentApproval).join(models.Application).filter(
+        models.Application.user_id == user.id,
+        models.DepartmentApproval.status == "Pending"
+    ).all()
+    
+    for ticket in pending_tickets:
+        if auto_status == "In Review":
+            ticket.status = "In Review"
+            ticket.officer_comments = f"🟡 AI Screening Passed for {document_type}. Awaiting final human officer sign-off."
+        else:
+            # Leave it as Pending, but warn the user
+            ticket.officer_comments = f"🔴 AI Rejected {document_type}: {ai_analysis.get('screening_status')}. Please upload a correct, clear document."
+
     db.commit()
     
     return {
@@ -237,7 +280,6 @@ async def upload_document(
         "status": auto_status,
         "extracted_metadata": ai_analysis
     }
-
 @app.post("/applications/submit/")
 def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
     # 1. Find the user and their checklist

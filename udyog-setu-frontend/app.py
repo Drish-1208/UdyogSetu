@@ -109,32 +109,134 @@ def applicant_dashboard():
     if response.status_code == 200:
         data = response.json()
         
-        # 1. FIX THE RED ERROR BOX: Check if the user has no applications yet
+        # Handle new users who haven't finished onboarding
         if "overall_status" not in data:
             st.title("Welcome to Udyog Setu!")
             st.info(data.get("message", "You haven't submitted any applications yet."))
-            st.markdown("*(Hint: Use the FastAPI docs to submit an application to see your metrics!)*")
-            return # This stops the code here so the red error box doesn't happen!
+            return
 
-        # 2. FIX THE NAME: Use the actual Full Name from the backend data
-        st.title(f"Welcome back, {data['applicant']}")
-        st.markdown("### Your Active Applications")
+        st.title(f"🏢 Welcome back, {data['applicant']}")
+        st.markdown("Monitor your regulatory approvals and submit required documentation below.")
         
-        # Display high-level progress
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric(label="Overall Status", value=data["overall_status"])
-        with col2:
-            st.metric(label="Total Progress", value=data["total_progress"])
-            
+        # NEATER UI: Top-level metrics grouped in a styled card container
+        with st.container(border=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(label="Overall Status", value=data["overall_status"])
+            with col2:
+                # Add a % sign for better visual feedback
+                st.metric(label="Total Progress", value=f"{data['total_progress']}%")
+            with col3:
+                # Calculate how many tickets are not approved yet
+                pending_count = len([t for t in data["department_breakdown"] if t['status'] != 'Approved'])
+                st.metric(label="Pending Action Items", value=pending_count)
+                
         st.divider()
-        st.subheader("Department Breakdown")
         
-        # Display tickets
-        for ticket in data["department_breakdown"]:
-            with st.expander(f"{ticket['department']} - {ticket['status']}"):
-                st.write(f"**Last Updated:** {ticket['last_updated']}")
-                st.write(f"**Official Comments:** {ticket['officer_comments']}")
+        # Split the screen into two neat columns: Tickets on the left, Uploads on the right
+        left_col, right_col = st.columns([1.5, 1])
+        
+        with left_col:
+            st.subheader("📋 Department Review Tickets")
+            
+            # TICKET EXPANSION: Richer ticket display with status icons and progress bars
+            for ticket in data["department_breakdown"]:
+                # Assign traffic-light icons based on status
+                if ticket['status'] == "Approved":
+                    status_icon = "🟢"
+                    progress_val = 100
+                elif ticket['status'] == "Pending":
+                    status_icon = "🟠"
+                    progress_val = 25
+                else:
+                    status_icon = "🔴"
+                    progress_val = 50
+
+                # Auto-expand tickets that still need attention
+                with st.expander(f"{status_icon} {ticket['department']} - {ticket['status']}", expanded=(ticket['status'] == 'Pending')):
+                    st.caption(f"Last Updated: {ticket['last_updated']}")
+                    
+                    if ticket['officer_comments']:
+                        st.info(f"💬 **Official Note:** {ticket['officer_comments']}")
+                    else:
+                        st.write("💬 **Official Note:** Awaiting review from department officer.")
+                    
+                    # Visual progress bar for each ticket
+                    st.progress(progress_val, text="Department Processing Stage")
+        
+        with right_col:
+            st.subheader("📤 Document Center")
+            
+            # DOCUMENT UPLOAD: Fully functional upload widget connected to FastAPI
+            with st.container(border=True):
+                st.markdown("Upload required files for verification.")
+                
+                doc_type = st.selectbox("Select Document Type", [
+                    "Company Registration (MCA)", 
+                    "GST Registration", 
+                    "Fire NOC", 
+                    "Environmental Clearance",
+                    "Identity Proof",
+                    "Property Lease Agreement"
+                ])
+                
+                uploaded_file = st.file_uploader("Upload PDF or Image", type=["pdf", "png", "jpg", "jpeg"])
+                
+                if st.button("Secure Upload", use_container_width=True, type="primary"):
+                    if uploaded_file is not None:
+                        with st.spinner("Encrypting and uploading to server..."):
+                            # Format the file for FastAPI's UploadFile
+                            files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                            
+                            # Format the Form data
+                            data_payload = {
+                                "email": st.session_state["user_name"],
+                                "document_type": doc_type
+                            }
+                            
+                            # Fire off to your backend endpoint
+                            upload_res = requests.post(f"{API_URL}/documents/upload/", data=data_payload, files=files)
+                            
+                            if upload_res.status_code == 200:
+                                result = upload_res.json()
+                                meta = result.get("extracted_metadata", {})
+                                data = meta.get("extracted_data", {})
+                                
+                                st.success(f"✅ {doc_type} uploaded successfully!")
+                                
+                                # 🎨 NEAT UI: Beautiful AI Verification Card replaces raw JSON
+                                with st.container(border=True):
+                                    st.markdown("### 🤖 AI Verification Results")
+                                    
+                                    if meta.get("is_valid"):
+                                        st.success("Status: **Verified & Valid**")
+                                    else:
+                                        st.error("Status: **Manual Review Required**")
+                                        
+                                    score = float(meta.get("confidence_score", 0.0))
+                                    st.progress(score, text=f"AI Confidence Score: {int(score * 100)}%")
+                                    
+                                    st.divider()
+                                    
+                                    col_a, col_b = st.columns(2)
+                                    with col_a:
+                                        st.caption("Document Number")
+                                        st.write(f"**{data.get('document_number', 'N/A')}**")
+                                        st.caption("Issue Date")
+                                        st.write(f"**{data.get('issue_date', 'N/A')}**")
+                                        
+                                    with col_b:
+                                        st.caption("Signatures Present")
+                                        st.write(f"**{'Yes' if data.get('signatures_present') else 'No'}**")
+                                        st.caption("Expiry Date")
+                                        st.write(f"**{data.get('expiry_date', 'N/A')}**")
+                                        
+                                    if meta.get("critical_flags"):
+                                        st.warning(f"🚩 **Flags:** {', '.join(meta['critical_flags'])}")
+                            else:
+                                st.error("Upload failed. Check backend logs.")
+                    else:
+                        st.warning("Please attach a file first.")
     else:
         st.warning("Your session has expired or no data was found.")
 

@@ -3,6 +3,8 @@ import os
 import json
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from pydantic import BaseModel, UUID4
+from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm # <-- Add this new import
 import jwt # <-- Add this to decode the token
@@ -16,6 +18,11 @@ import uuid
 import auth
 
 app = FastAPI()
+
+class OfficerDecision(BaseModel):
+    ticket_id: UUID4  # Matches your UUID primary key
+    decision: str     # "Approved" or "Rejected"
+    comments: str
 
 class ExtractedData(BaseModel):
     document_number: Optional[str] = Field(description="The unique ID number of the document. For PAN, this is a 10-character alphanumeric string. Null if illegible.")
@@ -464,3 +471,46 @@ async def get_vault_documents(
         })
         
     return {"vault": vault_items}
+
+@app.get("/admin/tickets/pending/")
+def get_pending_tickets(db: Session = Depends(get_db)):
+    """Fetches all tickets that passed AI screening and need human review."""
+    try:
+        tickets = db.query(models.DepartmentApproval).filter(
+            models.DepartmentApproval.status == "In Review"
+        ).all()
+        
+        results = []
+        for ticket in tickets:
+            app_record = db.query(models.Application).filter(models.Application.id == ticket.application_id).first()
+            user = db.query(models.User).filter(models.User.id == app_record.user_id).first() if app_record else None
+            
+            # Safely fetch department name if relationship is loaded, else fallback to license type
+            dept_name = ticket.department.name if hasattr(ticket, "department") and ticket.department else ticket.license_type
+            
+            # Use official_notes as defined in your model
+            notes = getattr(ticket, "official_notes", None) or "Awaiting final sign-off."
+            
+            results.append({
+                "ticket_id": str(ticket.id),
+                "applicant": user.full_name if user else "Unknown Business",
+                "department": dept_name,
+                "status": ticket.status,
+                "current_note": notes
+            })
+        return {"tickets": results}
+    except Exception as e:
+        print(f"Admin Dashboard Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/admin/tickets/review/")
+def review_ticket(payload: OfficerDecision, db: Session = Depends(get_db)):
+    """Allows a government official to approve or reject a ticket."""
+    ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == payload.ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found.")
+        
+    ticket.status = payload.decision
+    ticket.official_notes = f"👨‍⚖️ Official Verdict: {payload.comments}"
+    db.commit()
+    return {"message": f"Ticket {payload.ticket_id} marked as {payload.decision}."}

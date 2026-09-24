@@ -261,25 +261,72 @@ def applicant_dashboard():
                     st.error("Failed to load vault data from the server.")
 
 def government_analytics():
-    st.title("📊 State Analytics Dashboard")
-    st.markdown("Real-time bottleneck analysis for the state of Maharashtra.")
+    st.title("🏛️ Government Officer Portal")
     
-    response = requests.get(f"{API_URL}/admin/statistics/")
-    if response.status_code == 200:
-        data = response.json()
+    # Split the admin view into an active desk and a passive analytics view
+    desk_tab, analytics_tab = st.tabs(["👨‍⚖️ Officer Approval Desk", "📊 State Analytics"])
+    
+    with desk_tab:
+        st.markdown("### Pending AI-Screened Applications")
+        st.info("These applications have passed the AI Gatekeeper and require final human sign-off.")
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Registered Businesses", data["state_overview"]["total_registered_businesses"])
-        col2.metric("Pending Reviews", data["department_bottlenecks"]["pending_reviews"])
-        col3.metric("Approval Rate", data["department_bottlenecks"]["overall_approval_rate"])
+        headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
+        res = requests.get(f"{API_URL}/admin/tickets/pending/", headers=headers)
         
-        st.divider()
-        st.bar_chart({
-            "Approved": [data["department_bottlenecks"]["approved_licenses"]],
-            "Pending": [data["department_bottlenecks"]["pending_reviews"]],
-            "Rejected": [data["department_bottlenecks"]["rejected_applications"]]
-        })
-
+        if res.status_code == 200:
+            tickets = res.json().get("tickets", [])
+            
+            if not tickets:
+                st.success("🎉 Inbox Zero! All AI-screened applications have been processed.")
+            else:
+                for t in tickets:
+                    with st.container(border=True):
+                        st.subheader(f"{t['applicant']} - {t['department']}")
+                        st.warning(f"Current Status: **{t['status']}**")
+                        st.write(f"🤖 **AI Note:** {t['current_note']}")
+                        
+                        # Interactive form for the officer to make a decision
+                        with st.form(key=f"review_form_{t['ticket_id']}"):
+                            official_comment = st.text_input("Official Officer Comment", placeholder="e.g., Verified against state records. Approved.")
+                            
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                approve = st.form_submit_button("✅ Approve Application", use_container_width=True, type="primary")
+                            with col_b:
+                                reject = st.form_submit_button("❌ Reject Application", use_container_width=True)
+                                
+                            if approve or reject:
+                                decision = "Approved" if approve else "Rejected"
+                                payload = {
+                                    "ticket_id": t['ticket_id'],
+                                    "decision": decision,
+                                    "comments": official_comment or f"Application {decision.lower()} by officer."
+                                }
+                                
+                                patch_res = requests.patch(f"{API_URL}/admin/tickets/review/", json=payload, headers=headers)
+                                if patch_res.status_code == 200:
+                                    st.success(f"Ticket {decision} successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to update ticket.")
+    
+    with analytics_tab:
+        st.markdown("### Real-time Bottleneck Analysis")
+        response = requests.get(f"{API_URL}/admin/statistics/")
+        if response.status_code == 200:
+            data = response.json()
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Registered Businesses", data["state_overview"]["total_registered_businesses"])
+            col2.metric("Pending Reviews", data["department_bottlenecks"]["pending_reviews"])
+            col3.metric("Approval Rate", data["department_bottlenecks"]["overall_approval_rate"])
+            
+            st.divider()
+            st.bar_chart({
+                "Approved": [data["department_bottlenecks"]["approved_licenses"]],
+                "Pending": [data["department_bottlenecks"]["pending_reviews"]],
+                "Rejected": [data["department_bottlenecks"]["rejected_applications"]]
+            })
 # --- Navigation Sidebar ---
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/Seal_of_Maharashtra.svg/200px-Seal_of_Maharashtra.svg.png", width=100)

@@ -238,19 +238,27 @@ def applicant_dashboard():
                 st.markdown("### 🗄️ Your Verified Documents")
                 st.info("Upload once, use everywhere. Instantly attach these verified documents to any department requirement.")
                 
-                if not st.session_state["vault"]:
-                    st.write("Your vault is currently empty.")
+                # Fetch persistent vault data directly from PostgreSQL
+                vault_res = requests.get(f"{API_URL}/documents/vault/", headers=headers)
+                
+                if vault_res.status_code == 200:
+                    vault_data = vault_res.json().get("vault", [])
+                    
+                    if not vault_data:
+                        st.write("Your vault is currently empty.")
+                    else:
+                        # Add 'enumerate' to get a unique index 'i' for every single document
+                        for i, doc in enumerate(vault_data):
+                            with st.container(border=True):
+                                st.write(f"📄 **{doc['type']}**")
+                                st.caption(f"ID Number: {doc['number']} | Security Score: {int(doc['score'] * 100)}%")
+                                
+                                # Inject the unique index '__{i}' into the key string
+                                if st.button("Attach to Pending Tickets", key=f"vault_{doc['type']}_{i}", use_container_width=True):
+                                    st.success(f"✅ {doc['type']} instantly attached to all requiring departments!")
+                                    st.balloons()
                 else:
-                    for doc in st.session_state["vault"]:
-                        with st.container(border=True):
-                            st.write(f"📄 **{doc['type']}**")
-                            st.caption(f"ID Number: {doc['number']} | Security Score: {int(doc['score'] * 100)}%")
-                            
-                            if st.button("Attach to Pending Tickets", key=f"vault_{doc['type']}", use_container_width=True):
-                                st.success(f"✅ {doc['type']} instantly attached to all requiring departments!")
-                                st.balloons()
-    else:
-        st.warning("Your session has expired or no data was found.")
+                    st.error("Failed to load vault data from the server.")
 
 def government_analytics():
     st.title("📊 State Analytics Dashboard")

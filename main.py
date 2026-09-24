@@ -1,6 +1,8 @@
 import google.generativeai as genai
 import os
 import json
+from pydantic import BaseModel, Field
+from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm # <-- Add this new import
 import jwt # <-- Add this to decode the token
@@ -14,6 +16,19 @@ import uuid
 import auth
 
 app = FastAPI()
+
+class ExtractedData(BaseModel):
+    document_number: Optional[str] = Field(description="The unique ID number of the document. For PAN, this is a 10-character alphanumeric string. Null if illegible.")
+    issue_date: Optional[str] = Field(description="Issue date in YYYY-MM-DD format.")
+    expiry_date: Optional[str] = Field(description="Expiry date in YYYY-MM-DD format. Return null for documents without expiry (e.g., PAN cards).")
+    signatures_present: bool = Field(description="True if a physical or digital signature is detected.")
+
+class DocumentVerificationResult(BaseModel):
+    is_valid: bool = Field(description="Strictly True ONLY if the document perfectly matches the requested document_type and is clearly legible.")
+    confidence_score: float = Field(description="Confidence score from 0.0 to 1.0.")
+    screening_status: str = Field(description="Output 'Passed AI Screening' or 'Rejected: [Specific Reason]'.")
+    extracted_data: ExtractedData
+    critical_flags: List[str] = Field(description="List of issues (e.g., blurry, expired, mismatched name). Empty if perfect.")
 
 # ==========================================
 # 1. Pydantic Schemas (The Order Tickets)
@@ -176,40 +191,31 @@ import json
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: str):
-    """Sends actual file bytes to Gemini for strict, smart screening."""
+    """Sends actual file bytes to Gemini 3.6 Flash using strict Pydantic Structured Outputs."""
     try:
-        model = genai.GenerativeModel('gemini-3.6-flash') # Or 3.6-flash if you are using that
+        model = genai.GenerativeModel('gemini-3.6-flash') 
         
         prompt = f"""
         You are a strict, automated Screening Agent for the Maharashtra Government.
         The user claims this document is a: '{document_type}'.
         
         YOUR SCREENING RULES:
-        1. STRICT MATCH: If the document is clearly NOT a {document_type} (e.g. they uploaded a PAN card but selected MCA Registration), you MUST set is_valid to false.
+        1. STRICT MATCH: If the document is clearly NOT a '{document_type}' (e.g., they uploaded an Identity Proof but selected Fire NOC), set is_valid to false.
         2. QUALITY CHECK: If the image is heavily blurred, cut off, or unreadable, set is_valid to false.
-        3. SMART EXTRACTION: Extract standard fields. Note: Indian PAN Cards do NOT have expiry dates (set to null). Aadhaar cards require both sides or a full e-Aadhaar.
-        
-        Respond ONLY with a valid JSON object matching this exact structure, with no markdown formatting:
-        {{
-            "is_valid": true,
-            "confidence_score": 0.95,
-            "screening_status": "Passed AI Screening" or "Rejected: [Specific Reason]",
-            "extracted_data": {{
-                "document_number": "extracted number or null",
-                "issue_date": "YYYY-MM-DD or null",
-                "expiry_date": "YYYY-MM-DD or null"
-            }},
-            "critical_flags": ["list of issues, if any"]
-        }}
+        3. SMART DATA EXTRACTION: Extract the ID number and dates. Remember that Indian PAN cards do not have expiry dates. 
         """
         
-        response = model.generate_content([
-            prompt,
-            {"mime_type": mime_type, "data": file_bytes}
-        ])
+        response = model.generate_content(
+            [prompt, {"mime_type": mime_type, "data": file_bytes}],
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=DocumentVerificationResult,
+                temperature=0.1 # Low temperature for analytical strictness
+            )
+        )
         
-        raw_text = response.text.replace('```json', '').replace('```', '').strip()
-        return json.loads(raw_text)
+        # Because of the schema, we no longer need to strip markdown or guess the format
+        return json.loads(response.text)
         
     except Exception as e:
         print(f"AI Engine Error: {e}")
@@ -220,8 +226,6 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
             "extracted_data": {}, 
             "critical_flags": ["AI processing failed or file unreadable."]
         }
-
-
 @app.post("/documents/upload/")
 async def upload_document(
     email: str = Form(...),
@@ -423,3 +427,25 @@ def get_government_statistics(db: Session = Depends(get_db)):
         },
         "message": "Real-time state analytics generated successfully."
     }
+@app.get("/documents/vault/")
+async def get_vault_documents(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user) 
+):
+    # Fetch all documents for this user that passed AI Gatekeeper screening
+    docs = db.query(models.Document).filter(
+        models.Document.user_id == current_user.id,
+        models.Document.verification_status.in_(["Verified", "In Review"])
+    ).all()
+    
+    vault_items = []
+    for doc in docs:
+        meta = doc.ai_extracted_metadata or {}
+        extracted = meta.get("extracted_data", {})
+        vault_items.append({
+            "type": doc.document_type,
+            "number": extracted.get("document_number", "N/A"),
+            "score": meta.get("confidence_score", 0.0)
+        })
+        
+    return {"vault": vault_items}

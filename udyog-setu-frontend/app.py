@@ -60,6 +60,48 @@ def login_page():
                 elif response.status_code == 400:
                     st.error(response.json().get("detail", "This email is already registered."))
 
+def onboarding_flow():
+    st.title("📋 Business Onboarding")
+    st.markdown("Let's figure out exactly which licenses you need to operate in Maharashtra.")
+    
+    with st.form("onboarding_form"):
+        sector = st.selectbox("Business Sector", ["Food", "Agriculture", "Textile", "Manufacturing", "IT/Tech", "Other"])
+        employee_count = st.number_input("Estimated Number of Employees", min_value=1, value=5)
+        hazardous = st.checkbox("Will your facility handle hazardous chemicals?")
+        
+        submitted = st.form_submit_button("Generate Required Checklist", type="primary")
+        
+        if submitted:
+            payload = {
+                "sector": sector,
+                "employee_count": employee_count,
+                "has_hazardous_chemicals": hazardous
+            }
+            headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
+            
+            # Call the secure backend rules engine
+            response = requests.post(f"{API_URL}/onboarding/", json=payload, headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                st.success(data["message"])
+                st.info(f"You require **{data['total_approvals_required']}** total approvals.")
+                
+                for approval in data["required_approvals"]:
+                    st.markdown(f"- ✅ {approval}")
+                
+                # Automatically submit master application to spawn parallel department tickets
+                app_payload = {"email": st.session_state["user_name"]} 
+                app_response = requests.post(f"{API_URL}/applications/submit/", json=app_payload, headers=headers)
+                
+                if app_response.status_code == 200:
+                    st.balloons()
+                    st.success("Your master application has been generated and sent to all departments! Switching to dashboard...")
+                    st.session_state["page"] = "applicant"
+                    st.rerun()
+            else:
+                st.error("Failed to generate checklist. Please try again.")
+
 def applicant_dashboard():
     headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
     response = requests.get(f"{API_URL}/dashboard/my-status/", headers=headers)
@@ -138,6 +180,13 @@ page = st.session_state.get("page", "login")
 if not st.session_state["access_token"]:
     login_page()
 elif page == "applicant":
-    applicant_dashboard()
+    # Check if the user has applications. If not, force them to Onboarding!
+    headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
+    check_status = requests.get(f"{API_URL}/dashboard/my-status/", headers=headers)
+    
+    if check_status.status_code == 200 and "overall_status" not in check_status.json():
+        onboarding_flow()
+    else:
+        applicant_dashboard()
 elif page == "admin":
     government_analytics()

@@ -1,23 +1,179 @@
 import streamlit as st
 import requests
 
-# Point this to your FastAPI backend
 API_URL = "http://127.0.0.1:8000"
 
-st.set_page_config(page_title="Udyog Setu Maharashtra", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="Udyog Setu Maharashtra", layout="wide")
 
-# Initialize session state
+# CSS Injection for Full-Page Dark Theme & Glassmorphism
+st.markdown("""
+<style>
+/* Overall dark theme setup & Header */
+.stApp, [data-testid="stAppViewContainer"] {
+    background-color: #0e1117 !important;
+    background-image: linear-gradient(135deg, #0e1117 0%, #1a1e24 100%) !important;
+    color: #e0e0e0;
+}
+[data-testid="stHeader"] {
+    background-color: transparent !important;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background-color: rgba(14, 17, 23, 0.98) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Glassmorphism Containers and Expanders (Distinct Ticket Borders) */
+[data-testid="stVerticalBlockBorderWrapper"], 
+[data-testid="stForm"], 
+[data-testid="stExpander"] > div {
+    background: rgba(30, 34, 43, 0.4) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border-radius: 16px !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important; 
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* Distinct Ticket Borders (Streamlit Expanders) */
+[data-testid="stExpander"] {
+    border: 2px solid rgba(255, 255, 255, 0.3) !important;
+    border-radius: 12px !important;
+    background-color: rgba(30, 34, 43, 0.5) !important;
+    margin-bottom: 12px !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3) !important;
+    overflow: hidden !important;
+}
+[data-testid="stExpander"] summary {
+    background-color: transparent !important;
+}
+[data-testid="stExpander"] summary:hover {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Glassmorphism Inputs & Selectboxes */
+div[data-baseweb="select"] > div,
+div[data-baseweb="select"] div[role="button"],
+div[data-baseweb="base-input"] > input,
+div[data-baseweb="base-input"],
+div[data-baseweb="input"] {
+    background-color: rgba(30, 34, 43, 0.6) !important;
+    border-color: rgba(255, 255, 255, 0.1) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+/* Dropdown Menu List Items */
+ul[data-baseweb="menu"] {
+    background-color: #1a1e24 !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+li[data-baseweb="menu-item"] {
+    color: #ffffff !important;
+}
+li[data-baseweb="menu-item"]:hover {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* File Uploader Dropzone Fix */
+[data-testid="stFileUploaderDropzone"],
+[data-testid="stFileUploadDropzone"] {
+    background-color: rgba(30, 34, 43, 0.6) !important;
+    background-image: none !important;
+    border: 1px dashed rgba(255, 255, 255, 0.3) !important;
+    border-radius: 8px !important;
+}
+[data-testid="stFileUploaderDropzone"] *,
+[data-testid="stFileUploadDropzone"] * {
+    color: #ffffff !important;
+    fill: #ffffff !important;
+}
+
+/* Dark Upload Button Fix */
+[data-testid="stFileUploaderDropzone"] button,
+[data-testid="stFileUploadDropzone"] button {
+    background-color: rgba(20, 24, 31, 0.95) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    color: #ffffff !important;
+}
+[data-testid="stFileUploaderDropzone"] button:hover,
+[data-testid="stFileUploadDropzone"] button:hover {
+    background-color: rgba(45, 52, 63, 0.95) !important;
+    border-color: rgba(255, 255, 255, 0.4) !important;
+}
+
+/* Uploaded File Preview Box */
+[data-testid="stUploadedFile"] {
+    background-color: rgba(20, 24, 31, 0.9) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    border-radius: 8px !important;
+}
+[data-testid="stUploadedFile"] div, 
+[data-testid="stUploadedFile"] span, 
+[data-testid="stUploadedFile"] small {
+    color: #ffffff !important;
+}
+[data-testid="stUploadedFile"] svg {
+    fill: #ffffff !important;
+}
+
+/* General Button styling */
+.stButton>button, 
+.stFormSubmitButton>button {
+    background: rgba(255, 255, 255, 0.05) !important;
+    backdrop-filter: blur(5px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border-radius: 8px !important;
+    color: #ffffff !important;
+    transition: all 0.3s ease !important;
+}
+.stButton>button:hover, 
+.stFormSubmitButton>button:hover {
+    background: rgba(255, 255, 255, 0.15) !important;
+    border: 1px solid rgba(255, 255, 255, 0.3) !important;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Primary Button Override */
+button[kind="primary"] {
+    background: rgba(255, 75, 75, 0.2) !important;
+    border: 1px solid rgba(255, 75, 75, 0.4) !important;
+}
+button[kind="primary"]:hover {
+    background: rgba(255, 75, 75, 0.4) !important;
+}
+
+/* Text & metric overrides */
+h1, h2, h3, h4, p, span, label {
+    color: #f0f2f6 !important;
+}
+[data-testid="stMetricValue"], [data-testid="stMetricLabel"] {
+    color: #ffffff !important;
+}
+
+/* Tabs overriding */
+button[data-baseweb="tab"] {
+    background: transparent !important;
+    color: #aaaaaa !important;
+}
+button[data-baseweb="tab"][aria-selected="true"] {
+    color: #ffffff !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 if "access_token" not in st.session_state:
     st.session_state["access_token"] = None
 if "user_name" not in st.session_state:
     st.session_state["user_name"] = None
 if "vault" not in st.session_state:
-    st.session_state["vault"] = []  # 🗄️ NEW: Smart Vault memory
+    st.session_state["vault"] = []  
 
 def login_page():
-    st.title("🏛️ Udyog Setu Portal")
+    st.title("Udyog Setu Portal")
     
-    tab1, tab2 = st.tabs(["🔒 Login", "📝 Register New Business"])
+    tab1, tab2 = st.tabs(["Login", "Register New Business"])
     
     with tab1:
         st.subheader("Access your dashboard")
@@ -62,7 +218,7 @@ def login_page():
                     st.error(response.json().get("detail", "This email is already registered."))
 
 def onboarding_flow():
-    st.title("📋 Business Onboarding")
+    st.title("Business Onboarding")
     st.markdown("Let's figure out exactly which licenses you need to operate in Maharashtra.")
     
     with st.form("onboarding_form"):
@@ -88,7 +244,7 @@ def onboarding_flow():
                 st.info(f"You require **{data['total_approvals_required']}** total approvals.")
                 
                 for approval in data["required_approvals"]:
-                    st.markdown(f"- ✅ {approval}")
+                    st.markdown(f"- {approval}")
                 
                 app_payload = {"email": st.session_state["user_name"]} 
                 app_response = requests.post(f"{API_URL}/applications/submit/", json=app_payload, headers=headers)
@@ -113,7 +269,7 @@ def applicant_dashboard():
             st.info(data.get("message", "You haven't submitted any applications yet."))
             return
 
-        st.title(f"🏢 Welcome back, {data['applicant']}")
+        st.title(f"Welcome back, {data['applicant']}")
         
         with st.container(border=True):
             col1, col2, col3 = st.columns(3)
@@ -130,34 +286,32 @@ def applicant_dashboard():
         left_col, right_col = st.columns([1.5, 1])
         
         with left_col:
-            st.subheader("📋 Department Review Tickets")
+            st.subheader("Department Review Tickets")
             
             for ticket in data["department_breakdown"]:
-                # NEW LOGIC: Support for the Yellow "In Review" Status
                 if ticket['status'] == "Approved":
-                    status_icon, progress_val = "🟢", 100
+                    progress_val = 100
                 elif ticket['status'] == "In Review":
-                    status_icon, progress_val = "🟡", 75
+                    progress_val = 75
                 elif ticket['status'] == "Pending":
-                    status_icon, progress_val = "🟠", 25
+                    progress_val = 25
                 else:
-                    status_icon, progress_val = "🔴", 50
+                    progress_val = 50
 
-                with st.expander(f"{status_icon} {ticket['department']} - {ticket['status']}", expanded=(ticket['status'] == 'Pending')):
+                with st.expander(f"{ticket['department']} - {ticket['status']}", expanded=(ticket['status'] == 'Pending')):
                     st.caption(f"Last Updated: {ticket['last_updated']}")
                     
                     if ticket['officer_comments']:
-                        st.info(f"💬 **Official Note:** {ticket['officer_comments']}")
+                        st.info(f"**Official Note:** {ticket['officer_comments']}")
                     else:
-                        st.write("💬 **Official Note:** Awaiting review from department officer.")
+                        st.write("**Official Note:** Awaiting review from department officer.")
                     
                     st.progress(progress_val, text="Department Processing Stage")
         
         with right_col:
-            st.subheader("📤 Document Center")
+            st.subheader("Document Center")
             
-            # 🗄️ NEW LOGIC: Upload vs Smart Vault Tabs
-            upload_tab, vault_tab = st.tabs(["📤 Upload New", "🗄️ Smart Vault"])
+            upload_tab, vault_tab = st.tabs(["Upload New", "Smart Vault"])
             
             with upload_tab:
                 with st.container(border=True):
@@ -190,7 +344,6 @@ def applicant_dashboard():
                                     meta = result.get("extracted_metadata", {})
                                     extract = meta.get("extracted_data", {})
                                     
-                                    # If AI approves it, add it to the user's Vault
                                     if meta.get("is_valid"):
                                         if not any(d['type'] == doc_type for d in st.session_state["vault"]):
                                             st.session_state["vault"].append({
@@ -200,14 +353,13 @@ def applicant_dashboard():
                                             })
                                     
                                     with st.container(border=True):
-                                        st.markdown("### 🤖 AI Screening Results")
+                                        st.markdown("### AI Screening Results")
                                         
-                                        # Strict UI logic for rejection vs human review
                                         if meta.get("is_valid"):
-                                            st.warning("🟡 **Passed Screening: In Review by Officer**")
-                                            st.success("✅ Copy saved to Smart Vault")
+                                            st.warning("**Passed Screening: In Review by Officer**")
+                                            st.success("Copy saved to Smart Vault")
                                         else:
-                                            st.error(f"🔴 **Rejected:** {meta.get('screening_status', 'Mismatch detected.')}")
+                                            st.error(f"**Rejected:** {meta.get('screening_status', 'Mismatch detected.')}")
                                             
                                         score = float(meta.get("confidence_score", 0.0))
                                         st.progress(score, text=f"AI Confidence Score: {int(score * 100)}%")
@@ -228,17 +380,16 @@ def applicant_dashboard():
                                             st.write(f"**{extract.get('expiry_date', 'N/A')}**")
                                             
                                         if meta.get("critical_flags"):
-                                            st.warning(f"🚩 **Flags:** {', '.join(meta['critical_flags'])}")
+                                            st.warning(f"**Flags:** {', '.join(meta['critical_flags'])}")
                                 else:
                                     st.error("Upload failed. Check backend logs.")
                         else:
                             st.warning("Please attach a file first.")
                             
             with vault_tab:
-                st.markdown("### 🗄️ Your Verified Documents")
+                st.markdown("### Your Verified Documents")
                 st.info("Upload once, use everywhere. Instantly attach these verified documents to any department requirement.")
                 
-                # Fetch persistent vault data directly from PostgreSQL
                 vault_res = requests.get(f"{API_URL}/documents/vault/", headers=headers)
                 
                 if vault_res.status_code == 200:
@@ -247,24 +398,21 @@ def applicant_dashboard():
                     if not vault_data:
                         st.write("Your vault is currently empty.")
                     else:
-                        # Add 'enumerate' to get a unique index 'i' for every single document
                         for i, doc in enumerate(vault_data):
                             with st.container(border=True):
-                                st.write(f"📄 **{doc['type']}**")
+                                st.write(f"**{doc['type']}**")
                                 st.caption(f"ID Number: {doc['number']} | Security Score: {int(doc['score'] * 100)}%")
                                 
-                                # Inject the unique index '__{i}' into the key string
                                 if st.button("Attach to Pending Tickets", key=f"vault_{doc['type']}_{i}", use_container_width=True):
-                                    st.success(f"✅ {doc['type']} instantly attached to all requiring departments!")
+                                    st.success(f"{doc['type']} instantly attached to all requiring departments!")
                                     st.balloons()
                 else:
                     st.error("Failed to load vault data from the server.")
 
 def government_analytics():
-    st.title("🏛️ Government Officer Portal")
+    st.title("Government Officer Portal")
     
-    # Split the admin view into an active desk and a passive analytics view
-    desk_tab, analytics_tab = st.tabs(["👨‍⚖️ Officer Approval Desk", "📊 State Analytics"])
+    desk_tab, analytics_tab = st.tabs(["Officer Approval Desk", "State Analytics"])
     
     with desk_tab:
         st.markdown("### Pending AI-Screened Applications")
@@ -277,23 +425,22 @@ def government_analytics():
             tickets = res.json().get("tickets", [])
             
             if not tickets:
-                st.success("🎉 Inbox Zero! All AI-screened applications have been processed.")
+                st.success("Inbox Zero! All AI-screened applications have been processed.")
             else:
                 for t in tickets:
                     with st.container(border=True):
                         st.subheader(f"{t['applicant']} - {t['department']}")
                         st.warning(f"Current Status: **{t['status']}**")
-                        st.write(f"🤖 **AI Note:** {t['current_note']}")
+                        st.write(f"**AI Note:** {t['current_note']}")
                         
-                        # Interactive form for the officer to make a decision
                         with st.form(key=f"review_form_{t['ticket_id']}"):
                             official_comment = st.text_input("Official Officer Comment", placeholder="e.g., Verified against state records. Approved.")
                             
                             col_a, col_b = st.columns(2)
                             with col_a:
-                                approve = st.form_submit_button("✅ Approve Application", use_container_width=True, type="primary")
+                                approve = st.form_submit_button("Approve Application", use_container_width=True, type="primary")
                             with col_b:
-                                reject = st.form_submit_button("❌ Reject Application", use_container_width=True)
+                                reject = st.form_submit_button("Reject Application", use_container_width=True)
                                 
                             if approve or reject:
                                 decision = "Approved" if approve else "Rejected"
@@ -327,6 +474,7 @@ def government_analytics():
                 "Pending": [data["department_bottlenecks"]["pending_reviews"]],
                 "Rejected": [data["department_bottlenecks"]["rejected_applications"]]
             })
+
 # --- Navigation Sidebar ---
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/Seal_of_Maharashtra.svg/200px-Seal_of_Maharashtra.svg.png", width=100)
@@ -338,7 +486,6 @@ with st.sidebar:
         if st.button("State Analytics"):
             st.session_state["page"] = "admin"
             
-        # 🔒 SECURITY FIX: Completely wipe session memory on logout
         if st.button("Logout", type="primary"):
             st.session_state["access_token"] = None
             st.session_state["user_name"] = None

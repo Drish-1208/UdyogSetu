@@ -1,14 +1,11 @@
 import google.generativeai as genai
 import os
 import json
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, UUID4
 from typing import List, Optional
-from pydantic import BaseModel, UUID4
-from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm # <-- Add this new import
-import jwt # <-- Add this to decode the token
-from pydantic import BaseModel
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+import jwt 
 from sqlalchemy.orm import Session
 
 # Import our database tools and recipe book
@@ -48,8 +45,6 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: str
     password: str
-
-    
 
 class BusinessProfile(BaseModel):
     sector: str
@@ -97,6 +92,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
+
 # ==========================================
 # 3. Rules Engine Data (Scalable Logic)
 # ==========================================
@@ -130,7 +126,6 @@ CONDITIONAL_REQUIREMENTS = [
 def read_root():
     return {"Message": "Hello! The government portal backend is awake!"}
 
-
 @app.post("/users/")
 def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
     # 1. Catch duplicate emails first!
@@ -162,7 +157,6 @@ def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
     
     return {"message": "Success! User securely saved to Database.", "name": new_user.full_name}
 
-
 @app.post("/onboarding/")
 def generate_checklist(
     profile: BusinessProfile, 
@@ -192,12 +186,11 @@ def generate_checklist(
         "total_approvals_required": len(final_checklist),
         "required_approvals": final_checklist
     }
-import json
 
 # Configure the live AI connection
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# 📜 NEW: Dynamic MAITRI Compliance Rules
+# NEW: Dynamic MAITRI Compliance Rules
 DOCUMENT_RULES = {
     "Company Registration (MCA)": "Must contain a 21-character Corporate Identification Number (CIN) and be issued by the Ministry of Corporate Affairs or Registrar of Companies.",
     "GST Registration": "Must contain a 15-character GSTIN. Ensure it explicitly states 'Goods and Services Tax'.",
@@ -248,6 +241,7 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
             "extracted_data": {}, 
             "critical_flags": ["AI processing failed or file unreadable."]
         }
+
 @app.post("/documents/upload/")
 async def upload_document(
     email: str = Form(...),
@@ -268,7 +262,7 @@ async def upload_document(
     # Run the LIVE AI Screening
     ai_analysis = analyze_document_with_ai(document_type, file_bytes, file.content_type)
     
-    # 🚀 NEW LOGIC: AI is a Gatekeeper, not the final approver.
+    # NEW LOGIC: AI is a Gatekeeper, not the final approver.
     auto_status = "Rejected"
     if ai_analysis.get("is_valid") and ai_analysis.get("confidence_score", 0) > 0.85:
         auto_status = "In Review" # Passed to Human Official
@@ -293,10 +287,10 @@ async def upload_document(
     for ticket in pending_tickets:
         if auto_status == "In Review":
             ticket.status = "In Review"
-            ticket.officer_comments = f"🟡 AI Screening Passed for {document_type}. Awaiting final human officer sign-off."
+            ticket.officer_comments = f"AI Screening Passed for {document_type}. Awaiting final human officer sign-off."
         else:
             # Leave it as Pending, but warn the user
-            ticket.officer_comments = f"🔴 AI Rejected {document_type}: {ai_analysis.get('screening_status')}. Please upload a correct, clear document."
+            ticket.officer_comments = f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}. Please upload a correct, clear document."
 
     db.commit()
     
@@ -306,6 +300,7 @@ async def upload_document(
         "status": auto_status,
         "extracted_metadata": ai_analysis
     }
+
 @app.post("/applications/submit/")
 def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
     # 1. Find the user and their checklist
@@ -356,8 +351,6 @@ def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
         "departments_notified": len(required_approvals)
     }
 
-
-
 @app.post("/login/")
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     # Swagger UI's form always calls the field 'username', so we map it to our 'email' column
@@ -406,6 +399,7 @@ def get_secure_dashboard(current_user: models.User = Depends(get_current_user), 
         "total_progress": f"{len([t for t in department_tickets if t.status == 'Approved'])}/{len(department_tickets)} Completed",
         "department_breakdown": dashboard_data
     }
+
 @app.patch("/departments/review/")
 def official_review(review: DepartmentReview, db: Session = Depends(get_db)):
     # This endpoint is used by the Government Official's frontend
@@ -419,6 +413,7 @@ def official_review(review: DepartmentReview, db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": f"Ticket for {ticket.department.name} updated to {review.new_status}"}
+
 @app.get("/admin/statistics/")
 def get_government_statistics(db: Session = Depends(get_db)):
     """
@@ -449,6 +444,7 @@ def get_government_statistics(db: Session = Depends(get_db)):
         },
         "message": "Real-time state analytics generated successfully."
     }
+
 @app.get("/documents/vault/")
 async def get_vault_documents(
     db: Session = Depends(get_db),
@@ -511,6 +507,6 @@ def review_ticket(payload: OfficerDecision, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Ticket not found.")
         
     ticket.status = payload.decision
-    ticket.official_notes = f"👨‍⚖️ Official Verdict: {payload.comments}"
+    ticket.official_notes = f"Official Verdict: {payload.comments}"
     db.commit()
     return {"message": f"Ticket {payload.ticket_id} marked as {payload.decision}."}

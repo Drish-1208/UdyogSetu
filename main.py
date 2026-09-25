@@ -8,7 +8,6 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import jwt 
 from sqlalchemy.orm import Session
 
-# Import our database tools and recipe book
 from database import SessionLocal
 import models
 import uuid
@@ -17,8 +16,8 @@ import auth
 app = FastAPI()
 
 class OfficerDecision(BaseModel):
-    ticket_id: UUID4  # Matches your UUID primary key
-    decision: str     # "Approved" or "Rejected"
+    ticket_id: UUID4  
+    decision: str     
     comments: str
 
 class ExtractedData(BaseModel):
@@ -34,9 +33,6 @@ class DocumentVerificationResult(BaseModel):
     extracted_data: ExtractedData
     critical_flags: List[str] = Field(description="List of issues (e.g., blurry, expired, mismatched name). Empty if perfect.")
 
-# ==========================================
-# 1. Pydantic Schemas
-# ==========================================
 class UserCreate(BaseModel):
     full_name: str
     email: str
@@ -59,9 +55,6 @@ class DepartmentReview(BaseModel):
     new_status: str
     comments: str
 
-# ==========================================
-# 2. Database Dependency
-# ==========================================
 def get_db():
     db = SessionLocal()
     try:
@@ -90,9 +83,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
-# ==========================================
-# 3. Rules Engine Data
-# ==========================================
 INDUSTRY_REQUIREMENTS = {
     "food": ["FSSAI License", "Health Trade License", "Food & Drug Administration (FDA) NOC"],
     "agriculture": ["FSSAI License", "Agri-Export Zone NOC"],
@@ -115,9 +105,6 @@ CONDITIONAL_REQUIREMENTS = [
     }
 ]
 
-# ==========================================
-# 4. API Endpoints
-# ==========================================
 @app.get("/")
 def read_root():
     return {"Message": "Hello! The government portal backend is awake!"}
@@ -189,7 +176,6 @@ DOCUMENT_RULES = {
 def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: str):
     try:
         model = genai.GenerativeModel('gemini-3.6-flash')
-        
         specific_rule = DOCUMENT_RULES.get(document_type, "Perform standard government document verification.")
         
         prompt = f"""
@@ -230,7 +216,7 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
 async def upload_document(
     email: str = Form(...),
     document_type: str = Form(...),
-    ticket_id: str = Form(...),  # NEW: Enforces document attachment to a strict, single ticket
+    ticket_id: str = Form(""),  
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -243,7 +229,6 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Invalid file type.")
 
     file_bytes = await file.read()
-    
     ai_analysis = analyze_document_with_ai(document_type, file_bytes, file.content_type)
     
     auto_status = "Rejected"
@@ -261,16 +246,19 @@ async def upload_document(
     )
     db.add(new_document)
     
-    # NEW LOGIC: Target ONLY the specific ticket requested, not all pending tickets
-    ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == ticket_id).first()
-    
-    if ticket:
-        if auto_status == "In Review":
-            ticket.status = "In Review"
-            ticket.officer_comments = f"AI Screening Passed for {document_type}. Awaiting final human officer sign-off."
-        else:
-            ticket.status = "Pending" if ticket.status == "Rejected" else ticket.status
-            ticket.officer_comments = f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}. Please upload a correct, clear document."
+    # Safely guard against empty strings breaking the PostgreSQL UUID cast
+    if ticket_id and ticket_id.strip():
+        try:
+            ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == ticket_id).first()
+            if ticket:
+                if auto_status == "In Review":
+                    ticket.status = "In Review"
+                    ticket.officer_comments = f"AI Screening Passed for {document_type}. Awaiting final human officer sign-off."
+                else:
+                    ticket.status = "Pending" if ticket.status == "Rejected" else ticket.status
+                    ticket.officer_comments = f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}. Please upload a correct, clear document."
+        except Exception as e:
+            print(f"Skipping ticket lookup: {e}")
 
     db.commit()
     

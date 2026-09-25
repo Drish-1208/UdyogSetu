@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import time
 
 API_URL = "http://127.0.0.1:8000"
 
@@ -298,7 +299,10 @@ def applicant_dashboard():
                 else:
                     progress_val = 50
 
-                with st.expander(f"{ticket['department']} - {ticket['status']}", expanded=(ticket['status'] == 'Pending')):
+                # Determine if ticket needs attention
+                needs_action = ticket['status'] in ['Pending', 'Rejected']
+
+                with st.expander(f"{ticket['department']} - {ticket['status']}", expanded=needs_action):
                     st.caption(f"Last Updated: {ticket['last_updated']}")
                     
                     if ticket['officer_comments']:
@@ -307,107 +311,69 @@ def applicant_dashboard():
                         st.write("**Official Note:** Awaiting review from department officer.")
                     
                     st.progress(progress_val, text="Department Processing Stage")
-        
-        with right_col:
-            st.subheader("Document Center")
-            
-            upload_tab, vault_tab = st.tabs(["Upload New", "Smart Vault"])
-            
-            with upload_tab:
-                with st.container(border=True):
-                    st.markdown("Upload files for automated AI screening.")
                     
-                    doc_type = st.selectbox("Select Document Type", [
-                        "Company Registration (MCA)", 
-                        "GST Registration", 
-                        "Fire NOC", 
-                        "Environmental Clearance",
-                        "Identity Proof",
-                        "Property Lease Agreement"
-                    ])
-                    
-                    uploaded_file = st.file_uploader("Upload PDF or Image", type=["pdf", "png", "jpg", "jpeg"])
-                    
-                    if st.button("Run AI Security Scan", use_container_width=True, type="primary"):
-                        if uploaded_file is not None:
-                            with st.spinner("AI Gatekeeper is analyzing the document..."):
-                                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                                data_payload = {
-                                    "email": st.session_state["user_name"],
-                                    "document_type": doc_type
-                                }
-                                
-                                upload_res = requests.post(f"{API_URL}/documents/upload/", data=data_payload, files=files)
-                                
-                                if upload_res.status_code == 200:
-                                    result = upload_res.json()
-                                    meta = result.get("extracted_metadata", {})
-                                    extract = meta.get("extracted_data", {})
+                    # NEW LOGIC: Unique upload interface embedded into specific tickets
+                    if needs_action:
+                        st.divider()
+                        st.write(f"**Upload requirement: {ticket['department']}**")
+                        uploaded_file = st.file_uploader(
+                            "Attach clear, legible document", 
+                            type=["pdf", "png", "jpg", "jpeg"], 
+                            key=f"upload_{ticket['ticket_id']}"
+                        )
+                        
+                        if st.button("Run AI Security Scan", key=f"scan_{ticket['ticket_id']}", use_container_width=True, type="primary"):
+                            if uploaded_file is not None:
+                                with st.spinner("AI Gatekeeper is analyzing the document..."):
+                                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                                    data_payload = {
+                                        "email": st.session_state["user_name"],
+                                        "document_type": ticket['department'], 
+                                        "ticket_id": ticket['ticket_id']
+                                    }
                                     
-                                    if meta.get("is_valid"):
-                                        if not any(d['type'] == doc_type for d in st.session_state["vault"]):
-                                            st.session_state["vault"].append({
-                                                "type": doc_type,
-                                                "number": extract.get("document_number", "N/A"),
-                                                "score": meta.get("confidence_score", 0.0)
-                                            })
+                                    upload_res = requests.post(f"{API_URL}/documents/upload/", data=data_payload, files=files)
                                     
-                                    with st.container(border=True):
-                                        st.markdown("### AI Screening Results")
+                                    if upload_res.status_code == 200:
+                                        result = upload_res.json()
+                                        meta = result.get("extracted_metadata", {})
                                         
                                         if meta.get("is_valid"):
-                                            st.warning("**Passed Screening: In Review by Officer**")
-                                            st.success("Copy saved to Smart Vault")
+                                            st.success("Passed AI Screening! Ticket updated and sent to officer.")
+                                            # Optional: Save to vault implicitly here
                                         else:
-                                            st.error(f"**Rejected:** {meta.get('screening_status', 'Mismatch detected.')}")
+                                            st.error(f"Rejected: {meta.get('screening_status', 'Mismatch detected.')}")
                                             
-                                        score = float(meta.get("confidence_score", 0.0))
-                                        st.progress(score, text=f"AI Confidence Score: {int(score * 100)}%")
-                                        
-                                        st.divider()
-                                        
-                                        col_a, col_b = st.columns(2)
-                                        with col_a:
-                                            st.caption("Document Number")
-                                            st.write(f"**{extract.get('document_number', 'N/A')}**")
-                                            st.caption("Issue Date")
-                                            st.write(f"**{extract.get('issue_date', 'N/A')}**")
-                                            
-                                        with col_b:
-                                            st.caption("Signatures")
-                                            st.write(f"**{'Yes' if extract.get('signatures_present') else 'No'}**")
-                                            st.caption("Expiry Date")
-                                            st.write(f"**{extract.get('expiry_date', 'N/A')}**")
-                                            
-                                        if meta.get("critical_flags"):
-                                            st.warning(f"**Flags:** {', '.join(meta['critical_flags'])}")
-                                else:
-                                    st.error("Upload failed. Check backend logs.")
-                        else:
-                            st.warning("Please attach a file first.")
-                            
-            with vault_tab:
-                st.markdown("### Your Verified Documents")
-                st.info("Upload once, use everywhere. Instantly attach these verified documents to any department requirement.")
+                                        # Let the user read the result before refreshing the dashboard status
+                                        time.sleep(2.5)
+                                        st.rerun()
+                                    else:
+                                        st.error("Upload failed. Check backend logs.")
+                            else:
+                                st.warning("Please attach a file first.")
+        
+        with right_col:
+            st.subheader("Smart Vault")
+            st.info("Your verified documents are stored here. You can attach them to future requirements.")
+            
+            vault_res = requests.get(f"{API_URL}/documents/vault/", headers=headers)
+            
+            if vault_res.status_code == 200:
+                vault_data = vault_res.json().get("vault", [])
                 
-                vault_res = requests.get(f"{API_URL}/documents/vault/", headers=headers)
-                
-                if vault_res.status_code == 200:
-                    vault_data = vault_res.json().get("vault", [])
-                    
-                    if not vault_data:
-                        st.write("Your vault is currently empty.")
-                    else:
-                        for i, doc in enumerate(vault_data):
-                            with st.container(border=True):
-                                st.write(f"**{doc['type']}**")
-                                st.caption(f"ID Number: {doc['number']} | Security Score: {int(doc['score'] * 100)}%")
-                                
-                                if st.button("Attach to Pending Tickets", key=f"vault_{doc['type']}_{i}", use_container_width=True):
-                                    st.success(f"{doc['type']} instantly attached to all requiring departments!")
-                                    st.balloons()
+                if not vault_data:
+                    st.write("Your vault is currently empty.")
                 else:
-                    st.error("Failed to load vault data from the server.")
+                    for i, doc in enumerate(vault_data):
+                        with st.container(border=True):
+                            st.write(f"**{doc['type']}**")
+                            st.caption(f"ID Number: {doc['number']} | Security Score: {int(doc['score'] * 100)}%")
+                            
+                            if st.button("Attach to Pending Tickets", key=f"vault_{doc['type']}_{i}", use_container_width=True):
+                                st.success(f"{doc['type']} instantly attached to all requiring departments!")
+                                st.balloons()
+            else:
+                st.error("Failed to load vault data from the server.")
 
 def government_analytics():
     st.title("Government Officer Portal")

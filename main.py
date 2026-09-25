@@ -35,7 +35,7 @@ class DocumentVerificationResult(BaseModel):
     critical_flags: List[str] = Field(description="List of issues (e.g., blurry, expired, mismatched name). Empty if perfect.")
 
 # ==========================================
-# 1. Pydantic Schemas (The Order Tickets)
+# 1. Pydantic Schemas
 # ==========================================
 class UserCreate(BaseModel):
     full_name: str
@@ -55,9 +55,9 @@ class ApplicationCreate(BaseModel):
     email: str
 
 class DepartmentReview(BaseModel):
-    approval_id: str  # The specific UUID of the department's ticket
-    new_status: str   # e.g., "Approved", "Rejected", "Need More Info"
-    comments: str     # e.g., "Fire exits are not marked clearly"
+    approval_id: str
+    new_status: str
+    comments: str
 
 # ==========================================
 # 2. Database Dependency
@@ -69,10 +69,8 @@ def get_db():
     finally:
         db.close()
 
-# This tells FastAPI where users get their tokens
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-# THE BOUNCER: This function checks the token, decodes it, and finds the secure user
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=401,
@@ -80,7 +78,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        # Decode the token using your secret key from auth.py
         payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
@@ -94,7 +91,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 # ==========================================
-# 3. Rules Engine Data (Scalable Logic)
+# 3. Rules Engine Data
 # ==========================================
 INDUSTRY_REQUIREMENTS = {
     "food": ["FSSAI License", "Health Trade License", "Food & Drug Administration (FDA) NOC"],
@@ -121,19 +118,16 @@ CONDITIONAL_REQUIREMENTS = [
 # ==========================================
 # 4. API Endpoints
 # ==========================================
-
 @app.get("/")
 def read_root():
     return {"Message": "Hello! The government portal backend is awake!"}
 
 @app.post("/users/")
 def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
-    # 1. Catch duplicate emails first!
     existing_user = db.query(models.User).filter(models.User.email == user_data.email).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="This email is already registered.")
 
-    # 2. Create or fetch the "entrepreneur" role
     role = db.query(models.Role).filter(models.Role.role_name == "entrepreneur").first()
     if not role:
         role = models.Role(role_name="entrepreneur")
@@ -141,14 +135,12 @@ def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(role)
 
-    # 3. Scramble the password using auth.py
     hashed_pwd = auth.get_password_hash(user_data.password)
     
-    # 4. Create the actual user with the secure password
     new_user = models.User(
         full_name=user_data.full_name,
         email=user_data.email,
-        password_hash=hashed_pwd, # Saves the scrambled version!
+        password_hash=hashed_pwd,
         role_id=role.id
     )
     
@@ -160,24 +152,20 @@ def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
 @app.post("/onboarding/")
 def generate_checklist(
     profile: BusinessProfile, 
-    current_user: models.User = Depends(get_current_user), # The Bouncer handles identity!
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Base approvals everyone needs
     required_approvals = {"Company Registration (MCA)", "GST Registration", "Shops & Establishment License"}
     
-    # Dynamic Matrix Lookup 
     sector_approvals = INDUSTRY_REQUIREMENTS.get(profile.sector.lower(), [])
     required_approvals.update(sector_approvals)
     
-    # Dynamic Conditional Evaluator 
     for rule in CONDITIONAL_REQUIREMENTS:
         if rule["evaluator"](profile):
             required_approvals.update(rule["approvals"])
             
     final_checklist = list(required_approvals)
         
-    # Directly update the user attached to the secure token
     current_user.business_profile = profile.model_dump() 
     db.commit()
         
@@ -187,10 +175,8 @@ def generate_checklist(
         "required_approvals": final_checklist
     }
 
-# Configure the live AI connection
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# NEW: Dynamic MAITRI Compliance Rules
 DOCUMENT_RULES = {
     "Company Registration (MCA)": "Must contain a 21-character Corporate Identification Number (CIN) and be issued by the Ministry of Corporate Affairs or Registrar of Companies.",
     "GST Registration": "Must contain a 15-character GSTIN. Ensure it explicitly states 'Goods and Services Tax'.",
@@ -201,11 +187,9 @@ DOCUMENT_RULES = {
 }
 
 def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: str):
-    """Sends file bytes to Gemini using Pydantic Outputs and Dynamic Legal Rules."""
     try:
         model = genai.GenerativeModel('gemini-3.6-flash')
         
-        # Fetch the specific legal rule for the requested document type
         specific_rule = DOCUMENT_RULES.get(document_type, "Perform standard government document verification.")
         
         prompt = f"""
@@ -226,7 +210,7 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
                 response_schema=DocumentVerificationResult,
-                temperature=0.0 # Absolute zero creativity - strict compliance mode
+                temperature=0.0
             )
         )
         
@@ -246,6 +230,7 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
 async def upload_document(
     email: str = Form(...),
     document_type: str = Form(...),
+    ticket_id: str = Form(...),  # NEW: Enforces document attachment to a strict, single ticket
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -259,13 +244,11 @@ async def upload_document(
 
     file_bytes = await file.read()
     
-    # Run the LIVE AI Screening
     ai_analysis = analyze_document_with_ai(document_type, file_bytes, file.content_type)
     
-    # NEW LOGIC: AI is a Gatekeeper, not the final approver.
     auto_status = "Rejected"
     if ai_analysis.get("is_valid") and ai_analysis.get("confidence_score", 0) > 0.85:
-        auto_status = "In Review" # Passed to Human Official
+        auto_status = "In Review"
 
     fake_cloud_url = f"https://s3-bucket.com/uploads/{file.filename}"
     
@@ -278,18 +261,15 @@ async def upload_document(
     )
     db.add(new_document)
     
-    # Sync with Department Tickets
-    pending_tickets = db.query(models.DepartmentApproval).join(models.Application).filter(
-        models.Application.user_id == user.id,
-        models.DepartmentApproval.status == "Pending"
-    ).all()
+    # NEW LOGIC: Target ONLY the specific ticket requested, not all pending tickets
+    ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == ticket_id).first()
     
-    for ticket in pending_tickets:
+    if ticket:
         if auto_status == "In Review":
             ticket.status = "In Review"
             ticket.officer_comments = f"AI Screening Passed for {document_type}. Awaiting final human officer sign-off."
         else:
-            # Leave it as Pending, but warn the user
+            ticket.status = "Pending" if ticket.status == "Rejected" else ticket.status
             ticket.officer_comments = f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}. Please upload a correct, clear document."
 
     db.commit()
@@ -303,7 +283,6 @@ async def upload_document(
 
 @app.post("/applications/submit/")
 def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
-    # 1. Find the user and their checklist
     user = db.query(models.User).filter(models.User.email == data.email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -311,12 +290,10 @@ def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
     if not user.business_profile or "sector" not in user.business_profile:
         raise HTTPException(status_code=400, detail="Please complete the onboarding checklist first.")
 
-    # 2. Re-run rules engine to get required approvals
     required_approvals = {"Company Registration (MCA)", "GST Registration", "Shops & Establishment License"}
     sector_approvals = INDUSTRY_REQUIREMENTS.get(user.business_profile.get("sector", "").lower(), [])
     required_approvals.update(sector_approvals)
     
-    # 3. Create the Master Application
     new_app = models.Application(
         user_id=user.id,
         status="Under Review"
@@ -325,9 +302,7 @@ def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_app)
 
-    # 4. Generate parallel Department Approval tickets
     for approval_name in required_approvals:
-        # We use 'name' here to perfectly match your models.py Department class
         dept = db.query(models.Department).filter(models.Department.name == approval_name).first()
         if not dept:
             dept = models.Department(name=approval_name)
@@ -353,14 +328,11 @@ def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
 
 @app.post("/login/")
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # Swagger UI's form always calls the field 'username', so we map it to our 'email' column
     user = db.query(models.User).filter(models.User.email == form_data.username).first()
     
-    # Check if user exists AND password is correct
     if not user or not auth.verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     
-    # Create the JWT Token
     access_token = auth.create_access_token(data={"sub": user.email})
     
     return {
@@ -371,16 +343,12 @@ def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = D
 
 @app.get("/dashboard/my-status/")
 def get_secure_dashboard(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Look how clean this is! We already know the user from the token.
-    
-    # Get their most recent application
     application = db.query(models.Application).filter(models.Application.user_id == current_user.id).order_by(models.Application.created_at.desc()).first()
     
     if not application:
         return {"message": f"Welcome {current_user.full_name}! No applications found yet.", "dashboard": []}
 
-    # Fetch all parallel department tickets
-    department_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.application_id == application.id).all()
+    department_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.application_id == application.id).order_by(models.DepartmentApproval.status.desc()).all()
 
     dashboard_data = [
         {
@@ -402,28 +370,22 @@ def get_secure_dashboard(current_user: models.User = Depends(get_current_user), 
 
 @app.patch("/departments/review/")
 def official_review(review: DepartmentReview, db: Session = Depends(get_db)):
-    # This endpoint is used by the Government Official's frontend
     ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == review.approval_id).first()
     
     if not ticket:
         raise HTTPException(status_code=404, detail="Approval ticket not found.")
         
     ticket.status = review.new_status
-    ticket.official_notes = review.comments # Fixed to match your model!
+    ticket.official_notes = review.comments
     db.commit()
     
     return {"message": f"Ticket for {ticket.department.name} updated to {review.new_status}"}
 
 @app.get("/admin/statistics/")
 def get_government_statistics(db: Session = Depends(get_db)):
-    """
-    Provides real-time analytics for the Maharashtra State Dashboard.
-    (In production, you would lock this down to 'admin' roles only using the token)
-    """
     total_users = db.query(models.User).count()
     total_applications = db.query(models.Application).count()
     
-    # Check ticket statuses across all departments
     pending_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.status == "Pending").count()
     approved_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.status == "Approved").count()
     rejected_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.status == "Rejected").count()
@@ -450,7 +412,6 @@ async def get_vault_documents(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user) 
 ):
-    # Fetch all documents for this user that passed AI Gatekeeper screening
     docs = db.query(models.Document).filter(
         models.Document.user_id == current_user.id,
         models.Document.verification_status.in_(["Verified", "In Review"])
@@ -470,7 +431,6 @@ async def get_vault_documents(
 
 @app.get("/admin/tickets/pending/")
 def get_pending_tickets(db: Session = Depends(get_db)):
-    """Fetches all tickets that passed AI screening and need human review."""
     try:
         tickets = db.query(models.DepartmentApproval).filter(
             models.DepartmentApproval.status == "In Review"
@@ -481,10 +441,7 @@ def get_pending_tickets(db: Session = Depends(get_db)):
             app_record = db.query(models.Application).filter(models.Application.id == ticket.application_id).first()
             user = db.query(models.User).filter(models.User.id == app_record.user_id).first() if app_record else None
             
-            # Safely fetch department name if relationship is loaded, else fallback to license type
             dept_name = ticket.department.name if hasattr(ticket, "department") and ticket.department else ticket.license_type
-            
-            # Use official_notes as defined in your model
             notes = getattr(ticket, "official_notes", None) or "Awaiting final sign-off."
             
             results.append({
@@ -501,7 +458,6 @@ def get_pending_tickets(db: Session = Depends(get_db)):
 
 @app.patch("/admin/tickets/review/")
 def review_ticket(payload: OfficerDecision, db: Session = Depends(get_db)):
-    """Allows a government official to approve or reject a ticket."""
     ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == payload.ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found.")

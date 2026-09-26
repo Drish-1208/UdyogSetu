@@ -6,7 +6,7 @@ API_URL = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title="Udyog Setu Maharashtra", layout="wide", initial_sidebar_state="expanded")
 
-# CSS Injection for Full-Page Dark Theme & Glassmorphism
+# CSS Injection for Full-Page Dark Theme, Glassmorphism, and Animations
 st.markdown("""
 <style>
 /* Overall dark theme setup & Header */
@@ -14,6 +14,28 @@ st.markdown("""
     background-color: #0e1117 !important;
     background-image: linear-gradient(135deg, #0e1117 0%, #1a1e24 100%) !important;
     color: #e0e0e0;
+}
+
+/* Custom Scrollbar for better UI */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: #0e1117; 
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2); 
+    border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.4); 
+}
+
+/* Fade-in Animation for Cards */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 /* Keep the Header transparent */
@@ -42,6 +64,7 @@ st.markdown("""
     border-radius: 16px !important;
     border: 1px solid rgba(255, 255, 255, 0.1) !important; 
     box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5) !important;
+    animation: fadeIn 0.6s ease-out forwards;
 }
 
 /* Distinct Ticket Borders (Streamlit Expanders) */
@@ -52,6 +75,7 @@ st.markdown("""
     margin-bottom: 12px !important;
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3) !important;
     overflow: hidden !important;
+    animation: fadeIn 0.5s ease-out forwards;
 }
 [data-testid="stExpander"] summary {
     background-color: transparent !important;
@@ -60,7 +84,7 @@ st.markdown("""
     background-color: rgba(255, 255, 255, 0.05) !important;
 }
 
-/* Glassmorphism Inputs & Selectboxes */
+/* Glassmorphism Inputs & Selectboxes with Focus Glow */
 div[data-baseweb="select"] > div,
 div[data-baseweb="select"] div[role="button"],
 div[data-baseweb="base-input"] > input,
@@ -70,6 +94,12 @@ div[data-baseweb="input"] {
     border-color: rgba(255, 255, 255, 0.1) !important;
     color: #ffffff !important;
     -webkit-text-fill-color: #ffffff !important;
+    transition: all 0.3s ease;
+}
+div[data-baseweb="base-input"] > input:focus,
+div[data-baseweb="input"]:focus-within {
+    border-color: #4CAF50 !important;
+    box-shadow: 0 0 8px rgba(76, 175, 80, 0.5) !important;
 }
 
 /* Dropdown Menu List Items */
@@ -91,6 +121,12 @@ li[data-baseweb="menu-item"]:hover {
     background-image: none !important;
     border: 1px dashed rgba(255, 255, 255, 0.3) !important;
     border-radius: 8px !important;
+    transition: all 0.3s ease;
+}
+[data-testid="stFileUploaderDropzone"]:hover,
+[data-testid="stFileUploadDropzone"]:hover {
+    border-color: #4CAF50 !important;
+    background-color: rgba(30, 34, 43, 0.8) !important;
 }
 [data-testid="stFileUploaderDropzone"] *,
 [data-testid="stFileUploadDropzone"] * {
@@ -199,7 +235,7 @@ with st.sidebar:
         if st.button("Apply for Business"):
             st.session_state["page"] = "onboarding"
             st.rerun()
-        if st.button("State Analytics"):
+        if st.button("Officer Approval Desk"):
             st.session_state["page"] = "admin"
             st.rerun()
             
@@ -305,7 +341,6 @@ def profile_page():
         with st.container(border=True):
             col1, col2 = st.columns([1, 4])
             with col1:
-                # Generate simple initials for a styled avatar
                 full_name = user_data.get('full_name', 'User Name')
                 initials = "".join([n[0] for n in full_name.split() if n]).upper()[:2]
                 st.markdown(
@@ -335,7 +370,6 @@ def profile_page():
                 st.session_state["page"] = "onboarding"
                 st.rerun()
         else:
-            # Create a grid layout for businesses (2 cards per row)[cite: 10]
             cols = st.columns(2)
             for i, app in enumerate(applications):
                 with cols[i % 2]:
@@ -618,41 +652,72 @@ def government_analytics():
             else:
                 for t in tickets:
                     with st.container(border=True):
-                        st.subheader(f"{t['applicant']} - {t['department']}")
+                        ticket_col, doc_col = st.columns([1, 1])
                         
-                        status_lower = t['status'].lower()
-                        if "approved" in status_lower:
-                            st.success(f"Current Status: **{t['status']}**")
-                        elif "review" in status_lower or "pending" in status_lower:
-                            st.warning(f"Current Status: **{t['status']}**")
-                        else:
-                            st.error(f"Current Status: **{t['status']}**")
+                        with ticket_col:
+                            st.subheader(f"{t['applicant']}")
+                            st.write(f"**Department:** {t['department']}")
                             
-                        st.write(f"**AI Note:** {t['current_note']}")
+                            status_lower = t['status'].lower()
+                            if "approved" in status_lower:
+                                st.success(f"Current Status: **{t['status']}**")
+                            elif "review" in status_lower or "pending" in status_lower:
+                                st.warning(f"Current Status: **{t['status']}**")
+                            else:
+                                st.error(f"Current Status: **{t['status']}**")
+                                
+                            st.write(f"**AI Note:** {t['current_note']}")
+                            
+                            with st.form(key=f"review_form_{t['ticket_id']}"):
+                                official_comment = st.text_input("Official Officer Comment", placeholder="e.g., Verified against state records. Approved.")
+                                
+                                col_a, col_b = st.columns(2)
+                                with col_a:
+                                    approve = st.form_submit_button("Approve Application", use_container_width=True, type="primary")
+                                with col_b:
+                                    reject = st.form_submit_button("Reject Application", use_container_width=True)
+                                    
+                                if approve or reject:
+                                    decision = "Approved" if approve else "Rejected"
+                                    payload = {
+                                        "ticket_id": t['ticket_id'],
+                                        "decision": decision,
+                                        "comments": official_comment or f"Application {decision.lower()} by officer."
+                                    }
+                                    
+                                    patch_res = requests.patch(f"{API_URL}/admin/tickets/review/", json=payload, headers=headers)
+                                    if patch_res.status_code == 200:
+                                        st.success(f"Ticket {decision} successfully!")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to update ticket.")
                         
-                        with st.form(key=f"review_form_{t['ticket_id']}"):
-                            official_comment = st.text_input("Official Officer Comment", placeholder="e.g., Verified against state records. Approved.")
-                            
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                approve = st.form_submit_button("Approve Application", use_container_width=True, type="primary")
-                            with col_b:
-                                reject = st.form_submit_button("Reject Application", use_container_width=True)
+                        with doc_col:
+                            st.markdown("#### Document Context")
+                            if t.get("document"):
+                                doc_info = t["document"]
+                                meta = doc_info.get("metadata", {})
+                                extract = meta.get("extracted_data", {})
                                 
-                            if approve or reject:
-                                decision = "Approved" if approve else "Rejected"
-                                payload = {
-                                    "ticket_id": t['ticket_id'],
-                                    "decision": decision,
-                                    "comments": official_comment or f"Application {decision.lower()} by officer."
-                                }
+                                score = meta.get("confidence_score", 0.0)
+                                st.progress(score, text=f"AI Confidence Score: {int(score * 100)}%")
                                 
-                                patch_res = requests.patch(f"{API_URL}/admin/tickets/review/", json=payload, headers=headers)
-                                if patch_res.status_code == 200:
-                                    st.success(f"Ticket {decision} successfully!")
-                                    st.rerun()
-                                else:
-                                    st.error("Failed to update ticket.")
+                                st.write(f"**Document Number:** {extract.get('document_number', 'N/A')}")
+                                st.write(f"**Issue Date:** {extract.get('issue_date', 'N/A')}")
+                                st.write(f"**Expiry Date:** {extract.get('expiry_date', 'N/A')}")
+                                st.write(f"**Signatures Verified:** {'Yes' if extract.get('signatures_present') else 'No'}")
+                                
+                                if meta.get("critical_flags"):
+                                    st.warning(f"Flags: {', '.join(meta['critical_flags'])}")
+                                    
+                                st.divider()
+                                file_url = doc_info.get("file_url", "#")
+                                
+                                # Functional direct download/view link instead of hiding the file
+                                st.markdown(f"**Original File:** <a href='{file_url}' target='_blank' style='color:#4CAF50; font-weight:bold; text-decoration:none;'>Open Document in New Tab</a>", unsafe_allow_html=True)
+                            else:
+                                st.info("No document explicitly attached to this specific department requirement yet.")
     
     with analytics_tab:
         st.markdown("### Real-time Bottleneck Analysis")

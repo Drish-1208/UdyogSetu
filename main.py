@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, UUID4
 from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
 import jwt 
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,10 @@ import uuid
 import auth
 
 app = FastAPI()
+
+# Create a local directory to actually store and serve the uploaded files
+os.makedirs("uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 class OfficerDecision(BaseModel):
     ticket_id: UUID4  
@@ -238,18 +243,25 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Invalid file type.")
 
     file_bytes = await file.read()
+    
+    # Save file physically to the uploads directory
+    file_path = f"uploads/{file.filename}"
+    with open(file_path, "wb") as f:
+        f.write(file_bytes)
+        
+    # Create the real active URL
+    real_url = f"http://127.0.0.1:8000/uploads/{file.filename}"
+    
     ai_analysis = analyze_document_with_ai(document_type, file_bytes, file.content_type)
     
     auto_status = "Rejected"
     if ai_analysis.get("is_valid") and ai_analysis.get("confidence_score", 0) > 0.85:
         auto_status = "In Review"
 
-    fake_cloud_url = f"https://s3-bucket.com/uploads/{file.filename}"
-    
     new_document = models.Document(
         user_id=user.id,
         document_type=document_type,
-        file_url=fake_cloud_url,
+        file_url=real_url,
         verification_status=auto_status,
         ai_extracted_metadata=ai_analysis
     )
@@ -458,12 +470,27 @@ def get_pending_tickets(db: Session = Depends(get_db)):
             dept_name = ticket.department.name if hasattr(ticket, "department") and ticket.department else ticket.license_type
             notes = getattr(ticket, "official_notes", None) or "Awaiting final sign-off."
             
+            doc = None
+            if user:
+                doc = db.query(models.Document).filter(
+                    models.Document.user_id == user.id,
+                    models.Document.document_type == dept_name
+                ).order_by(models.Document.created_at.desc()).first()
+
+            doc_info = None
+            if doc:
+                doc_info = {
+                    "file_url": doc.file_url,
+                    "metadata": doc.ai_extracted_metadata
+                }
+
             results.append({
                 "ticket_id": str(ticket.id),
                 "applicant": user.full_name if user else "Unknown Business",
                 "department": dept_name,
                 "status": ticket.status,
-                "current_note": notes
+                "current_note": notes,
+                "document": doc_info
             })
         return {"tickets": results}
     except Exception as e:

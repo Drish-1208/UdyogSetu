@@ -49,6 +49,7 @@ class BusinessProfile(BaseModel):
 
 class ApplicationCreate(BaseModel):
     email: str
+    business_name: str = "My Enterprise"
 
 class DepartmentReview(BaseModel):
     approval_id: str
@@ -135,6 +136,14 @@ def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": "Success! User securely saved to Database.", "name": new_user.full_name}
+
+@app.get("/users/me/")
+def get_user_profile(current_user: models.User = Depends(get_current_user)):
+    return {
+        "full_name": current_user.full_name,
+        "email": current_user.email,
+        "role": current_user.role.role_name if current_user.role else "User"
+    }
 
 @app.post("/onboarding/")
 def generate_checklist(
@@ -246,7 +255,6 @@ async def upload_document(
     )
     db.add(new_document)
     
-    # Safely guard against empty strings breaking the PostgreSQL UUID cast
     if ticket_id and ticket_id.strip():
         try:
             ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == ticket_id).first()
@@ -284,6 +292,7 @@ def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
     
     new_app = models.Application(
         user_id=user.id,
+        project_name=data.business_name,
         status="Under Review"
     )
     db.add(new_app)
@@ -314,6 +323,19 @@ def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
         "departments_notified": len(required_approvals)
     }
 
+@app.get("/applications/my-applications/")
+def get_my_applications(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    apps = db.query(models.Application).filter(models.Application.user_id == current_user.id).order_by(models.Application.created_at.desc()).all()
+    return [
+        {
+            "id": str(a.id), 
+            "name": a.project_name or f"Application {str(a.id)[:8]}", 
+            "status": a.status, 
+            "date": a.created_at
+        } 
+        for a in apps
+    ]
+
 @app.post("/login/")
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == form_data.username).first()
@@ -330,8 +352,11 @@ def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = D
     }
 
 @app.get("/dashboard/my-status/")
-def get_secure_dashboard(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    application = db.query(models.Application).filter(models.Application.user_id == current_user.id).order_by(models.Application.created_at.desc()).first()
+def get_secure_dashboard(app_id: Optional[str] = None, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if app_id:
+        application = db.query(models.Application).filter(models.Application.user_id == current_user.id, models.Application.id == app_id).first()
+    else:
+        application = db.query(models.Application).filter(models.Application.user_id == current_user.id).order_by(models.Application.created_at.desc()).first()
     
     if not application:
         return {"message": f"Welcome {current_user.full_name}! No applications found yet.", "dashboard": []}
@@ -351,6 +376,7 @@ def get_secure_dashboard(current_user: models.User = Depends(get_current_user), 
 
     return {
         "applicant": current_user.full_name,
+        "business_name": application.project_name or "My Business",
         "overall_status": application.status,
         "total_progress": f"{len([t for t in department_tickets if t.status == 'Approved'])}/{len(department_tickets)} Completed",
         "department_breakdown": dashboard_data

@@ -4,7 +4,6 @@ import time
 
 API_URL = "http://127.0.0.1:8000"
 
-# Added initial_sidebar_state="expanded" to force the menu open
 st.set_page_config(page_title="Udyog Setu Maharashtra", layout="wide", initial_sidebar_state="expanded")
 
 # CSS Injection for Full-Page Dark Theme & Glassmorphism
@@ -22,7 +21,7 @@ st.markdown("""
     background-color: transparent !important;
 }
 
-/* FIX: Hide ONLY the right-side elements (Deploy, Menu, Github icon) to save the sidebar toggle */
+/* Hide ONLY the right-side elements to save the sidebar toggle */
 [data-testid="stHeaderActionElements"] {
     display: none !important;
 }
@@ -179,15 +178,26 @@ if "user_name" not in st.session_state:
     st.session_state["user_name"] = None
 if "page" not in st.session_state:
     st.session_state["page"] = "login"
+if "active_app_id" not in st.session_state:
+    st.session_state["active_app_id"] = None
 
-# --- Navigation Sidebar (Moved to top so it always renders first) ---
+# --- Navigation Sidebar ---
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/Seal_of_Maharashtra.svg/200px-Seal_of_Maharashtra.svg.png", width=100)
     st.title("Navigation")
     
     if st.session_state.get("access_token"):
+        if st.button("Home"):
+            st.session_state["page"] = "welcome"
+            st.rerun()
+        if st.button("My Profile"):
+            st.session_state["page"] = "profile"
+            st.rerun()
         if st.button("My Dashboard"):
             st.session_state["page"] = "applicant"
+            st.rerun()
+        if st.button("Apply for Business"):
+            st.session_state["page"] = "onboarding"
             st.rerun()
         if st.button("State Analytics"):
             st.session_state["page"] = "admin"
@@ -196,13 +206,13 @@ with st.sidebar:
         if st.button("Logout", type="primary"):
             st.session_state["access_token"] = None
             st.session_state["user_name"] = None
+            st.session_state["active_app_id"] = None
             st.session_state["page"] = "login"
             st.rerun()
     else:
         st.write("Please log in to access your portal.")
 
 def login_page():
-    # Use columns to indent and center the login/register module perfectly
     spacer_left, main_col, spacer_right = st.columns([1, 2, 1])
     
     with main_col:
@@ -227,7 +237,7 @@ def login_page():
                         st.session_state["user_name"] = email
                         st.success("Login successful!")
                         time.sleep(1)
-                        st.session_state["page"] = "applicant"
+                        st.session_state["page"] = "welcome"
                         st.rerun()
                     else:
                         st.error("Invalid credentials. Please try again.")
@@ -256,14 +266,107 @@ def login_page():
                     elif response.status_code == 400:
                         st.error(response.json().get("detail", "This email is already registered."))
 
+def welcome_page():
+    spacer_left, main_col, spacer_right = st.columns([1, 3, 1])
+    
+    with main_col:
+        st.markdown("<h1 style='text-align: center; font-size: 3em; margin-bottom: 0;'>Welcome to Udyog Setu</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; font-size: 1.2em; color: #aaaaaa;'>Maharashtra Single Window Clearance System</p>", unsafe_allow_html=True)
+        st.divider()
+        
+        st.write(
+            "Udyog Setu accelerates your enterprise journey by providing a unified, AI-driven portal "
+            "for all your business licensing and registration needs. Securely upload your operational "
+            "documents to the Smart Vault once, and seamlessly apply for multiple state and central approvals."
+        )
+        
+        st.markdown("### Next Steps")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("Apply for New Business", use_container_width=True, type="primary"):
+                st.session_state["page"] = "onboarding"
+                st.rerun()
+        with c2:
+            if st.button("View My Profile", use_container_width=True):
+                st.session_state["page"] = "profile"
+                st.rerun()
+        with c3:
+            if st.button("Access Dashboard", use_container_width=True):
+                st.session_state["page"] = "applicant"
+                st.rerun()
+
+def profile_page():
+    st.title("My Profile")
+    headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
+    
+    user_res = requests.get(f"{API_URL}/users/me/", headers=headers)
+    if user_res.status_code == 200:
+        user_data = user_res.json()
+        with st.container(border=True):
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                # Generate simple initials for a styled avatar
+                full_name = user_data.get('full_name', 'User Name')
+                initials = "".join([n[0] for n in full_name.split() if n]).upper()[:2]
+                st.markdown(
+                    f"""
+                    <div style='background:rgba(255,255,255,0.1); border-radius:50%; width:100px; height:100px; 
+                    display:flex; align-items:center; justify-content:center; font-size:36px; font-weight:bold; 
+                    border: 2px solid rgba(255,255,255,0.2);'>
+                    {initials}
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
+            with col2:
+                st.subheader(full_name)
+                st.write(f"**Email Address:** {user_data.get('email', 'N/A')}")
+                st.write(f"**System Role:** {user_data.get('role', 'N/A').capitalize()}")
+            
+    st.divider()
+    st.subheader("My Registered Businesses")
+    
+    app_res = requests.get(f"{API_URL}/applications/my-applications/", headers=headers)
+    if app_res.status_code == 200:
+        applications = app_res.json()
+        if not applications:
+            st.info("You haven't registered any businesses yet.")
+            if st.button("Register a Business Now", type="primary"):
+                st.session_state["page"] = "onboarding"
+                st.rerun()
+        else:
+            # Create a grid layout for businesses (2 cards per row)[cite: 10]
+            cols = st.columns(2)
+            for i, app in enumerate(applications):
+                with cols[i % 2]:
+                    with st.container(border=True):
+                        st.markdown(f"### {app['name']}")
+                        st.caption(f"Date Created: {app['date'][:10]}")
+                        
+                        status_lower = app['status'].lower()
+                        if "approved" in status_lower:
+                            st.success(f"Status: {app['status']}")
+                        elif "review" in status_lower or "pending" in status_lower:
+                            st.warning(f"Status: {app['status']}")
+                        else:
+                            st.error(f"Status: {app['status']}")
+                            
+                        if st.button("Open Dashboard", key=f"open_{app['id']}", use_container_width=True):
+                            st.session_state["active_app_id"] = app['id']
+                            st.session_state["page"] = "applicant"
+                            st.rerun()
+    else:
+        st.error("Failed to load applications.")
+
 def onboarding_flow():
     _, main_col, _ = st.columns([1, 3, 1])
     
     with main_col:
-        st.title("Business Onboarding")
+        st.title("Apply for New Business")
         st.markdown("Let's figure out exactly which licenses you need to operate in Maharashtra.")
         
         with st.form("onboarding_form"):
+            business_name = st.text_input("Business Name", placeholder="e.g., Global Tech Solutions")
             sector = st.selectbox("Business Sector", ["Food", "Agriculture", "Textile", "Manufacturing", "IT/Tech", "Other"])
             employee_count = st.number_input("Estimated Number of Employees", min_value=1, value=5)
             hazardous = st.checkbox("Will your facility handle hazardous chemicals?")
@@ -271,38 +374,44 @@ def onboarding_flow():
             submitted = st.form_submit_button("Generate Required Checklist", type="primary", use_container_width=True)
             
             if submitted:
-                payload = {
-                    "sector": sector,
-                    "employee_count": employee_count,
-                    "has_hazardous_chemicals": hazardous
-                }
-                headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
-                
-                response = requests.post(f"{API_URL}/onboarding/", json=payload, headers=headers)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    st.success(data["message"])
-                    st.info(f"You require **{data['total_approvals_required']}** total approvals.")
-                    
-                    for approval in data["required_approvals"]:
-                        st.markdown(f"- {approval}")
-                    
-                    app_payload = {"email": st.session_state["user_name"]} 
-                    app_response = requests.post(f"{API_URL}/applications/submit/", json=app_payload, headers=headers)
-                    
-                    if app_response.status_code == 200:
-                        st.balloons()
-                        st.success("Master application generated! Switching to dashboard...")
-                        time.sleep(2)
-                        st.session_state["page"] = "applicant"
-                        st.rerun()
+                if not business_name:
+                    st.warning("Please enter a Business Name.")
                 else:
-                    st.error("Failed to generate checklist.")
+                    payload = {
+                        "sector": sector,
+                        "employee_count": employee_count,
+                        "has_hazardous_chemicals": hazardous
+                    }
+                    headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
+                    
+                    response = requests.post(f"{API_URL}/onboarding/", json=payload, headers=headers)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        st.success(data["message"])
+                        st.info(f"You require **{data['total_approvals_required']}** total approvals.")
+                        
+                        app_payload = {"email": st.session_state["user_name"], "business_name": business_name} 
+                        app_response = requests.post(f"{API_URL}/applications/submit/", json=app_payload, headers=headers)
+                        
+                        if app_response.status_code == 200:
+                            st.balloons()
+                            st.success("Master application generated! Switching to dashboard...")
+                            new_app_data = app_response.json()
+                            st.session_state["active_app_id"] = new_app_data.get("application_id")
+                            time.sleep(2)
+                            st.session_state["page"] = "applicant"
+                            st.rerun()
+                    else:
+                        st.error("Failed to generate checklist.")
 
 def applicant_dashboard():
     headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
-    response = requests.get(f"{API_URL}/dashboard/my-status/", headers=headers)
+    params = {}
+    if st.session_state.get("active_app_id"):
+        params["app_id"] = st.session_state["active_app_id"]
+        
+    response = requests.get(f"{API_URL}/dashboard/my-status/", headers=headers, params=params)
     
     if response.status_code == 200:
         data = response.json()
@@ -310,9 +419,13 @@ def applicant_dashboard():
         if "overall_status" not in data:
             st.title("Welcome to Udyog Setu!")
             st.info(data.get("message", "You haven't submitted any applications yet."))
+            if st.button("Apply for Business", type="primary"):
+                st.session_state["page"] = "onboarding"
+                st.rerun()
             return
 
-        st.title(f"Welcome back, {data['applicant']}")
+        st.title(f"Dashboard: {data.get('business_name', 'My Business')}")
+        st.write(f"Applicant: {data['applicant']}")
         
         with st.container(border=True):
             col1, col2, col3 = st.columns(3)
@@ -564,13 +677,19 @@ page = st.session_state.get("page", "login")
 
 if not st.session_state["access_token"]:
     login_page()
+elif page == "welcome":
+    welcome_page()
+elif page == "profile":
+    profile_page()
 elif page == "applicant":
     headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
     check_status = requests.get(f"{API_URL}/dashboard/my-status/", headers=headers)
-    
     if check_status.status_code == 200 and "overall_status" not in check_status.json():
-        onboarding_flow()
+        st.session_state["page"] = "profile"
+        st.rerun()
     else:
         applicant_dashboard()
+elif page == "onboarding":
+    onboarding_flow()
 elif page == "admin":
     government_analytics()

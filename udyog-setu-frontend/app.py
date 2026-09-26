@@ -6,7 +6,6 @@ API_URL = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title="Udyog Setu Maharashtra", layout="wide", initial_sidebar_state="expanded")
 
-# CSS Injection for Full-Page Dark Theme, Glassmorphism, and Animations
 st.markdown("""
 <style>
 /* Overall dark theme setup & Header */

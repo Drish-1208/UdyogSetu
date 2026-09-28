@@ -16,7 +16,7 @@ st.markdown("""
     color: #e0e0e0;
 }
 
-/* Custom Scrollbar for better UI */
+/* Custom Scrollbar */
 ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
@@ -32,18 +32,18 @@ st.markdown("""
     background: rgba(255, 255, 255, 0.4); 
 }
 
-/* Fade-in Animation for Cards */
+/* Fade-in Animation */
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
 }
 
-/* Keep the Header transparent */
+/* Transparent Header */
 [data-testid="stHeader"] {
     background-color: transparent !important;
 }
 
-/* Hide ONLY the right-side elements to save the sidebar toggle */
+/* Hide ONLY the right-side elements to keep the sidebar toggle intact */
 [data-testid="stHeaderActionElements"] {
     display: none !important;
 }
@@ -54,7 +54,7 @@ st.markdown("""
     border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
-/* Glassmorphism Containers and Expanders (Distinct Ticket Borders) */
+/* Glassmorphism Containers and Expanders */
 [data-testid="stVerticalBlockBorderWrapper"], 
 [data-testid="stForm"], 
 [data-testid="stExpander"] > div {
@@ -67,7 +67,7 @@ st.markdown("""
     animation: fadeIn 0.6s ease-out forwards;
 }
 
-/* Distinct Ticket Borders (Streamlit Expanders) */
+/* Distinct Ticket Borders */
 [data-testid="stExpander"] {
     border: 2px solid rgba(255, 255, 255, 0.3) !important;
     border-radius: 12px !important;
@@ -116,7 +116,7 @@ li[data-baseweb="menu-item"]:hover {
     background-color: rgba(255, 255, 255, 0.1) !important;
 }
 
-/* File Uploader Dropzone Fix */
+/* File Uploader Dropzone */
 [data-testid="stFileUploaderDropzone"],
 [data-testid="stFileUploadDropzone"] {
     background-color: rgba(30, 34, 43, 0.6) !important;
@@ -136,7 +136,7 @@ li[data-baseweb="menu-item"]:hover {
     fill: #ffffff !important;
 }
 
-/* Dark Upload Button Fix */
+/* Dark Upload Button */
 [data-testid="stFileUploaderDropzone"] button,
 [data-testid="stFileUploadDropzone"] button {
     background-color: rgba(20, 24, 31, 0.95) !important;
@@ -218,6 +218,8 @@ if "page" not in st.session_state:
     st.session_state["page"] = "login"
 if "active_app_id" not in st.session_state:
     st.session_state["active_app_id"] = None
+if "generated_certificate" not in st.session_state:
+    st.session_state["generated_certificate"] = None
 
 # --- Navigation Sidebar ---
 with st.sidebar:
@@ -245,6 +247,7 @@ with st.sidebar:
             st.session_state["access_token"] = None
             st.session_state["user_name"] = None
             st.session_state["active_app_id"] = None
+            st.session_state["generated_certificate"] = None
             st.session_state["page"] = "login"
             st.rerun()
     else:
@@ -490,7 +493,50 @@ def applicant_dashboard():
                 st.metric(label="Pending Action Items", value=pending_count)
                 
         st.divider()
-        
+
+        # Check if all tickets are Approved to unlock the Master Clearance Certificate
+        total_tickets = len(data["department_breakdown"])
+        approved_tickets = len([t for t in data["department_breakdown"] if t['status'] == 'Approved'])
+        all_approved = (total_tickets > 0 and approved_tickets == total_tickets)
+
+        if all_approved:
+            with st.container(border=True):
+                st.markdown("""
+                <div style="border-left: 4px solid #4CAF50; padding: 12px; background: rgba(76, 175, 80, 0.1); border-radius: 8px;">
+                    <h3 style="margin:0; color:#4CAF50;">Consolidated Master Clearance Granted</h3>
+                    <p style="margin:0; padding-top:4px; color:#e0e0e0;">All regulatory departments have approved your submissions. Your official Consent to Establish certificate can now be generated.</p>
+                </div>
+                """, unsafe_allow_html=True)
+                st.write("")
+                if st.button("Generate Master Clearance to Establish Certificate", type="primary", use_container_width=True):
+                    with st.spinner("Generating official certificate via Gemini AI Engine..."):
+                        app_target_id = st.session_state.get("active_app_id") or data.get("application_id", "")
+                        cert_res = requests.post(
+                            f"{API_URL}/certificates/generate/",
+                            json={"application_id": app_target_id},
+                            headers=headers
+                        )
+                        if cert_res.status_code == 200:
+                            cert_data = cert_res.json()
+                            st.session_state["generated_certificate"] = cert_data["certificate_text"]
+                            st.success("Official Certificate Generated Successfully!")
+                        else:
+                            st.error(cert_res.json().get("detail", "Failed to generate certificate."))
+
+            if st.session_state.get("generated_certificate"):
+                st.markdown("### Official Clearance to Establish Industry Certificate")
+                with st.container(border=True):
+                    st.text_area("Certificate View", value=st.session_state["generated_certificate"], height=350, disabled=True)
+                    st.download_button(
+                        label="Download Official Certificate",
+                        data=st.session_state["generated_certificate"],
+                        file_name=f"{data.get('business_name', 'Enterprise').replace(' ', '_')}_Clearance_Certificate.txt",
+                        mime="text/plain",
+                        type="primary",
+                        use_container_width=True
+                    )
+            st.divider()
+
         left_col, right_col = st.columns([1.5, 1])
         
         with left_col:
@@ -527,7 +573,6 @@ def applicant_dashboard():
                     
                     st.progress(progress_val, text="Department Processing Stage")
                     
-                    # Upload UI specifically for tickets waiting on the user
                     if needs_upload:
                         st.divider()
                         st.write(f"**Required Document:** {ticket.get('document_required', 'Standard Document')}")
@@ -640,18 +685,51 @@ def applicant_dashboard():
                 if not vault_data:
                     st.write("Your vault is currently empty.")
                 else:
+                    actionable_tickets = [
+                        t for t in data["department_breakdown"] 
+                        if t["status"] in ["Pending Submission", "Pending", "Rejected"]
+                    ]
+
                     for i, doc in enumerate(vault_data):
                         with st.container(border=True):
                             st.markdown(f"""
-                            <div style="border-left: 4px solid #4CAF50; padding-left: 12px; margin-bottom: 12px; background: rgba(76, 175, 80, 0.05); border-radius: 4px; padding-top: 8px; padding-bottom: 8px;">
+                            <div style="border-left: 4px solid #4CAF50; padding-left: 12px; margin-bottom: 8px; background: rgba(76, 175, 80, 0.05); border-radius: 4px; padding-top: 8px; padding-bottom: 8px;">
                                 <h4 style="margin:0; padding:0; color:#fff;">{doc['type']}</h4>
                                 <p style="margin:0; padding-top:4px; color:#bbb; font-size: 0.85em;">ID Number: {doc['number']} | Security Score: {int(doc['score'] * 100)}%</p>
                             </div>
                             """, unsafe_allow_html=True)
                             
-                            if st.button("Attach to Pending Tickets", key=f"vault_{doc['type']}_{i}", use_container_width=True):
-                                st.success(f"{doc['type']} instantly attached to all requiring departments!")
-                                st.balloons()
+                            # Granular Attachment Dropdown
+                            if actionable_tickets:
+                                ticket_options = {
+                                    f"{t['department']} - {t['license_name']} ({t['status']})": t['ticket_id']
+                                    for t in actionable_tickets
+                                }
+                                selected_ticket_label = st.selectbox(
+                                    f"Attach to Ticket",
+                                    options=list(ticket_options.keys()),
+                                    key=f"vault_select_{i}"
+                                )
+                                selected_ticket_id = ticket_options[selected_ticket_label]
+                                
+                                if st.button(f"Attach Document to Selected Ticket", key=f"vault_attach_{i}", use_container_width=True):
+                                    attach_payload = {
+                                        "ticket_id": selected_ticket_id,
+                                        "document_type": doc['type']
+                                    }
+                                    attach_res = requests.post(
+                                        f"{API_URL}/tickets/attach-vault/", 
+                                        json=attach_payload, 
+                                        headers=headers
+                                    )
+                                    if attach_res.status_code == 200:
+                                        st.success(f"{doc['type']} successfully attached to selected ticket!")
+                                        time.sleep(1.5)
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to attach document to ticket.")
+                            else:
+                                st.caption("All tickets for this business are currently In Review or Approved.")
             else:
                 st.error("Failed to load vault data from the server.")
 
@@ -661,26 +739,31 @@ def government_analytics():
     desk_tab, analytics_tab = st.tabs(["Officer Approval Desk", "State Analytics"])
     
     with desk_tab:
-        st.markdown("### Pending AI-Screened Applications")
-        st.info("These applications have passed the AI Gatekeeper and require final human sign-off.")
-        
         headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
         res = requests.get(f"{API_URL}/admin/tickets/pending/", headers=headers)
         
         if res.status_code == 200:
             tickets = res.json().get("tickets", [])
             
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                st.metric("Pending Officer Reviews", len(tickets))
+            with col_m2:
+                st.metric("Processing Queue Status", "Chronological (Oldest First)")
+            st.divider()
+            
             if not tickets:
                 st.success("Inbox Zero! All AI-screened applications have been processed.")
             else:
                 for t in tickets:
                     with st.container(border=True):
-                        ticket_col, doc_col = st.columns([1, 1])
+                        ticket_col, doc_col = st.columns([1.1, 0.9])
                         
                         with ticket_col:
-                            st.subheader(f"{t['applicant']}")
+                            st.markdown(f"### {t['applicant']}")
                             st.write(f"**Department:** {t['department']}")
                             st.write(f"**Approval Type:** {t.get('license_type', 'General')}")
+                            st.caption(f"Submitted At: {t.get('submitted_at', 'N/A')}")
                             
                             status_lower = t['status'].lower()
                             if "approved" in status_lower:
@@ -690,7 +773,7 @@ def government_analytics():
                             else:
                                 st.error(f"Current Status: **{t['status']}**")
                                 
-                            st.write(f"**AI Note:** {t['current_note']}")
+                            st.info(f"**AI Gatekeeper Note:** {t['current_note']}")
                             
                             with st.form(key=f"review_form_{t['ticket_id']}"):
                                 official_comment = st.text_input("Official Officer Comment", placeholder="e.g., Verified against state records. Approved.")
@@ -718,7 +801,7 @@ def government_analytics():
                                         st.error("Failed to update ticket.")
                         
                         with doc_col:
-                            st.markdown("#### Document Context")
+                            st.markdown("#### Document & Verification")
                             if t.get("document"):
                                 doc_info = t["document"]
                                 meta = doc_info.get("metadata", {})
@@ -737,8 +820,7 @@ def government_analytics():
                                     
                                 st.divider()
                                 file_url = doc_info.get("file_url", "#")
-                                
-                                st.markdown(f"**Original File:** <a href='{file_url}' target='_blank' style='color:#4CAF50; font-weight:bold; text-decoration:none;'>Open Document in New Tab</a>", unsafe_allow_html=True)
+                                st.markdown(f"**Original File:** <a href='{file_url}' target='_blank' style='color:#4CAF50; font-weight:bold; text-decoration:none;'>Open Uploaded Document in New Tab</a>", unsafe_allow_html=True)
                             else:
                                 st.info("No document explicitly attached to this specific department requirement yet.")
     

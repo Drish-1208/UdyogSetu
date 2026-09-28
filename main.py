@@ -3,6 +3,7 @@ import os
 import json
 from pydantic import BaseModel, Field, UUID4
 from typing import List, Optional
+from datetime import datetime, timezone
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +17,7 @@ import auth
 
 app = FastAPI()
 
+# Store and serve uploaded files
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
@@ -37,12 +39,11 @@ class DocumentVerificationResult(BaseModel):
     extracted_data: ExtractedData
     critical_flags: List[str] = Field(description="List of issues (e.g., blurry, expired, mismatched name). Empty if perfect.")
 
-# --- NEW: Dynamic AI Onboarding Schemas ---
 class ComplianceTicket(BaseModel):
     department: str = Field(description="The issuing government department (e.g., Fire Department, MPCB).")
     license_name: str = Field(description="The exact name of the license or approval required.")
-    required_document_type: str = Field(description="The primary physical document the user must upload to apply (e.g., Floor Plan, PAN Card, Lease Agreement).")
-    sla_days: int = Field(description="The maximum allowed processing time in days (Service Level Agreement).")
+    required_document_type: str = Field(description="The primary physical document the user must upload (e.g., Floor Plan, PAN Card, Lease Agreement).")
+    sla_days: int = Field(description="The maximum allowed processing time in days.")
 
 class AIComplianceChecklist(BaseModel):
     tickets: List[ComplianceTicket]
@@ -70,6 +71,13 @@ class DepartmentReview(BaseModel):
     approval_id: str
     new_status: str
     comments: str
+
+class AttachVaultRequest(BaseModel):
+    ticket_id: str
+    document_type: str
+
+class CertificateRequest(BaseModel):
+    application_id: str
 
 def get_db():
     db = SessionLocal()
@@ -148,14 +156,13 @@ def generate_dynamic_checklist_and_apply(
     current_user.business_profile = profile.model_dump()
     db.commit()
     
-    # 1. Ask Gemini to generate a highly specific legal checklist based on the deep parameters
     try:
         model = genai.GenerativeModel('gemini-3.6-flash')
         prompt = f"""
         You are the Chief Regulatory AI for the Maharashtra Government MAITRI portal.
         Analyze this business profile and generate the required government approvals.
-        Always include standard things like 'Company Registration (MCA)' and 'GST Registration'.
-        Then add specific approvals based on the profile:
+        Always include standard baseline compliances: 'Company Registration (MCA)' and 'GST Registration'.
+        Then dynamically generate specific approvals based on the profile:
         - Sector: {profile.sector}
         - Description: {profile.description}
         - Employees: {profile.employee_count}
@@ -180,7 +187,6 @@ def generate_dynamic_checklist_and_apply(
         print(f"AI Generation Failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate compliance checklist from AI Engine.")
 
-    # 2. Automatically create the Application and the Tickets
     new_app = models.Application(
         user_id=current_user.id,
         project_name=profile.business_name,
@@ -199,14 +205,13 @@ def generate_dynamic_checklist_and_apply(
             db.commit()
             db.refresh(dept)
 
-        # We inject the document requirement and SLA directly into the license_type field so the frontend can read it
         formatted_license_type = f"{item.get('license_name')} | DOC_REQ: {item.get('required_document_type')} | SLA: {item.get('sla_days')} Days"
         
         dept_ticket = models.DepartmentApproval(
             application_id=new_app.id,
             department_id=dept.id,         
             license_type=formatted_license_type,
-            status="Pending Submission", # NEW STATUS
+            status="Pending Submission",
             official_notes="Submit a document to proceed." 
         )
         db.add(dept_ticket)
@@ -229,7 +234,7 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
         GENERAL RULES:
         1. STRICT MATCH: Check if the document matches the required context of '{document_type}'. If it is completely irrelevant, set is_valid to false and explain why.
         2. ANTI-FRAUD CHECK: If the image is heavily blurred, cut off, unreadable, or tampered with, set is_valid to false.
-        3. SMART DATA EXTRACTION: Extract the primary ID/Certificate number, issue date, and expiry date if present. 
+        3. SMART DATA EXTRACTION: Extract the primary ID/Certificate number, issue date, and expiry date if present.
         """
         
         response = model.generate_content(
@@ -265,6 +270,7 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Invalid file type.")
 
     file_bytes = await file.read()
+    
     file_path = f"uploads/{file.filename}"
     with open(file_path, "wb") as f:
         f.write(file_bytes)
@@ -307,6 +313,107 @@ async def upload_document(
         "extracted_metadata": ai_analysis
     }
 
+@app.post("/tickets/attach-vault/")
+def attach_vault_to_ticket(
+    payload: AttachVaultRequest, 
+    current_user: models.User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == payload.ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Approval ticket not found.")
+    
+    ticket.status = "In Review"
+    ticket.official_notes = f"Document '{payload.document_type}' attached from Smart Vault. Awaiting officer sign-off."
+    db.commit()
+    return {"message": f"Successfully attached {payload.document_type} to {ticket.department.name} ticket!"}
+
+@app.post("/certificates/generate/")
+def generate_master_clearance_certificate(
+    payload: CertificateRequest, 
+    current_user: models.User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    app_record = db.query(models.Application).filter(
+        models.Application.id == payload.application_id, 
+        models.Application.user_id == current_user.id
+    ).first()
+    if not app_record:
+        raise HTTPException(status_code=404, detail="Application record not found.")
+    
+    tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.application_id == app_record.id).all()
+    if not tickets or any(t.status != "Approved" for t in tickets):
+        raise HTTPException(status_code=400, detail="Cannot generate Master Clearance Certificate until all departmental clearances are confirmed as Approved.")
+    
+    approved_list = []
+    for t in tickets:
+        lic_name = t.license_type or t.department.name
+        if " | DOC_REQ: " in lic_name:
+            lic_name = lic_name.split(" | ")[0]
+        approved_list.append(f"{t.department.name}: {lic_name}")
+    
+    business_name = app_record.project_name or "Industrial Enterprise"
+    owner_name = current_user.full_name
+    
+    prompt = f"""
+    You are the Senior Regulatory Authority of the Government of Maharashtra.
+    Generate a formal, legally structured 'Consolidated Consent to Establish & Master Industrial Clearance Certificate' under the MAITRI Single Window Clearance framework.
+
+    DETAILS:
+    - Enterprise Name: {business_name}
+    - Proprietor/Director Name: {owner_name}
+    - Application Reference ID: {str(app_record.id).upper()}
+    - Approvals and Clearances Granted:
+    {chr(10).join(['  * ' + item for item in approved_list])}
+
+    REQUIRED SECTIONS:
+    1. Header: 'GOVERNMENT OF MAHARASHTRA - MAITRI SINGLE WINDOW CLEARANCE SYSTEM'
+    2. Document Title: 'CONSOLIDATED CONSENT TO ESTABLISH & MASTER INDUSTRIAL CLEARANCE CERTIFICATE'
+    3. Statutory Reference Number & Date of Issuance.
+    4. Formal Preamble declaring that all statutory pre-requisites, environmental norms, and departmental clearances have been audited and verified.
+    5. Itemized Table/List of Granted Clearances and Departmental Allowances.
+    6. Maharashtra Industrial Statutory Compliance Declaration (stating adherence to state industrial safety, pollution control, and labor standards).
+    7. Udyog Setu Confirmation of Digital Validation and Authenticity Seal.
+
+    Return strictly the formatted certificate text. Do not add conversational text or emojis.
+    """
+    try:
+        model = genai.GenerativeModel('gemini-3.6-flash')
+        response = model.generate_content(prompt)
+        cert_text = response.text
+    except Exception as e:
+        cert_text = f"""GOVERNMENT OF MAHARASHTRA
+MAITRI SINGLE WINDOW CLEARANCE SYSTEM
+=============================================================
+CONSOLIDATED CONSENT TO ESTABLISH & MASTER INDUSTRIAL CLEARANCE CERTIFICATE
+
+Certificate Reference: MH-CTE-{str(app_record.id)[:8].upper()}
+Date of Issuance: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}
+
+ENTERPRISE DETAILS:
+- Business Entity: {business_name}
+- Authorized Representative / Owner: {owner_name}
+- Application Reference ID: {str(app_record.id)}
+
+STATUTORY APPROVALS & DEPARTMENTAL ALLOWANCES GRANTED:
+{chr(10).join(['* ' + item for item in approved_list])}
+
+UDYOG SETU VERIFICATION CONFIRMATION:
+This certifies that all designated department assessments, statutory clearances, and safety documentation have been scrutinized, verified, and officially sanctioned by competent state officers.
+
+MAHARASHTRA STATUTORY COMPLIANCE STATEMENT:
+The enterprise has met all statutory provisions under the Maharashtra Industrial Development Act and allied state environmental, municipal, and labor codes. Unconditional Consent to Establish is hereby granted.
+=============================================================
+Digitally Certified by the Single Window Clearance Authority, Government of Maharashtra
+"""
+
+    return {
+        "certificate_text": cert_text,
+        "business_name": business_name,
+        "owner_name": owner_name,
+        "application_id": str(app_record.id)
+    }
+
 @app.get("/applications/my-applications/")
 def get_my_applications(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     apps = db.query(models.Application).filter(models.Application.user_id == current_user.id).order_by(models.Application.created_at.desc()).all()
@@ -344,7 +451,6 @@ def get_secure_dashboard(app_id: Optional[str] = None, current_user: models.User
 
     dashboard_data = []
     for ticket in department_tickets:
-        # Unpack the injected string if it exists
         lic_str = ticket.license_type or "General Approval"
         doc_req = "Standard Document"
         sla = "N/A"
@@ -369,6 +475,7 @@ def get_secure_dashboard(app_id: Optional[str] = None, current_user: models.User
         })
 
     return {
+        "application_id": str(application.id),
         "applicant": current_user.full_name,
         "business_name": application.project_name or "My Business",
         "overall_status": application.status,
@@ -440,9 +547,10 @@ async def get_vault_documents(
 @app.get("/admin/tickets/pending/")
 def get_pending_tickets(db: Session = Depends(get_db)):
     try:
+        # Sorted from oldest to newest submission order
         tickets = db.query(models.DepartmentApproval).filter(
             models.DepartmentApproval.status == "In Review"
-        ).all()
+        ).order_by(models.DepartmentApproval.updated_at.asc()).all()
         
         results = []
         for ticket in tickets:
@@ -459,7 +567,6 @@ def get_pending_tickets(db: Session = Depends(get_db)):
             
             doc = None
             if user:
-                # Get the most recent doc matching the department or license type
                 doc = db.query(models.Document).filter(
                     models.Document.user_id == user.id
                 ).order_by(models.Document.created_at.desc()).first()
@@ -478,6 +585,7 @@ def get_pending_tickets(db: Session = Depends(get_db)):
                 "license_type": lic_str,
                 "status": ticket.status,
                 "current_note": notes,
+                "submitted_at": ticket.updated_at.strftime("%Y-%m-%d %H:%M UTC") if ticket.updated_at else "N/A",
                 "document": doc_info
             })
         return {"tickets": results}

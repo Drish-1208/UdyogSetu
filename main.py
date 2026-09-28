@@ -17,7 +17,6 @@ import auth
 
 app = FastAPI()
 
-# Store and serve uploaded files
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
@@ -27,22 +26,22 @@ class OfficerDecision(BaseModel):
     comments: str
 
 class ExtractedData(BaseModel):
-    document_number: Optional[str] = Field(description="The unique ID number of the document. For PAN, this is a 10-character alphanumeric string. Null if illegible.")
+    document_number: Optional[str] = Field(description="The unique ID number of the document. Null if illegible.")
     issue_date: Optional[str] = Field(description="Issue date in YYYY-MM-DD format.")
-    expiry_date: Optional[str] = Field(description="Expiry date in YYYY-MM-DD format. Return null for documents without expiry (e.g., PAN cards).")
+    expiry_date: Optional[str] = Field(description="Expiry date in YYYY-MM-DD format. Return null for documents without expiry.")
     signatures_present: bool = Field(description="True if a physical or digital signature is detected.")
 
 class DocumentVerificationResult(BaseModel):
-    is_valid: bool = Field(description="Strictly True ONLY if the document perfectly matches the requested document_type and is clearly legible.")
+    is_valid: bool = Field(description="Strictly True ONLY if the document perfectly matches the requested type and is clearly legible.")
     confidence_score: float = Field(description="Confidence score from 0.0 to 1.0.")
     screening_status: str = Field(description="Output 'Passed AI Screening' or 'Rejected: [Specific Reason]'.")
     extracted_data: ExtractedData
-    critical_flags: List[str] = Field(description="List of issues (e.g., blurry, expired, mismatched name). Empty if perfect.")
+    critical_flags: List[str] = Field(description="List of issues. Empty if perfect.")
 
 class ComplianceTicket(BaseModel):
-    department: str = Field(description="The issuing government department (e.g., Fire Department, MPCB).")
+    department: str = Field(description="The issuing government department.")
     license_name: str = Field(description="The exact name of the license or approval required.")
-    required_document_type: str = Field(description="The primary physical document the user must upload (e.g., Floor Plan, PAN Card, Lease Agreement).")
+    required_document_type: str = Field(description="The primary physical document the user must upload.")
     sla_days: int = Field(description="The maximum allowed processing time in days.")
 
 class AIComplianceChecklist(BaseModel):
@@ -232,7 +231,7 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
         The user claims this document satisfies the requirement for: '{document_type}'.
         
         GENERAL RULES:
-        1. STRICT MATCH: Check if the document matches the required context of '{document_type}'. If it is completely irrelevant, set is_valid to false and explain why.
+        1. STRICT MATCH: Check if the document matches the required context of '{document_type}'. If completely irrelevant, set is_valid to false.
         2. ANTI-FRAUD CHECK: If the image is heavily blurred, cut off, unreadable, or tampered with, set is_valid to false.
         3. SMART DATA EXTRACTION: Extract the primary ID/Certificate number, issue date, and expiry date if present.
         """
@@ -290,17 +289,18 @@ async def upload_document(
         ai_extracted_metadata=ai_analysis
     )
     db.add(new_document)
+    db.commit()
+    db.refresh(new_document)
     
     if ticket_id and ticket_id.strip():
         try:
             ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == ticket_id).first()
             if ticket:
-                if auto_status == "In Review":
-                    ticket.status = "In Review"
-                    ticket.official_notes = f"AI Screening Passed for {document_type}. Awaiting final human officer sign-off."
-                else:
-                    ticket.status = "Rejected"
-                    ticket.official_notes = f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}. Please upload a clear document."
+                # Map this specific document ID to the ticket so officers see the right file
+                ticket.assigned_official_id = user.id # placeholder linkage or we can store in official notes/metadata
+                # Alternatively, let's link the document via application_documents or store reference
+                ticket.official_notes = f"DOC_ID:{str(new_document.id)} | " + (f"AI Screening Passed for {document_type}. Awaiting final human officer sign-off." if auto_status == "In Review" else f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}.")
+                ticket.status = "In Review" if auto_status == "In Review" else "Rejected"
         except Exception as e:
             print(f"Skipping ticket lookup: {e}")
 
@@ -323,10 +323,17 @@ def attach_vault_to_ticket(
     if not ticket:
         raise HTTPException(status_code=404, detail="Approval ticket not found.")
     
+    # Find the corresponding verified document in vault
+    doc = db.query(models.Document).filter(
+        models.Document.user_id == current_user.id,
+        models.Document.document_type == payload.document_type
+    ).order_by(models.Document.created_at.desc()).first()
+
+    doc_id_tag = f"DOC_ID:{str(doc.id)} | " if doc else ""
     ticket.status = "In Review"
-    ticket.official_notes = f"Document '{payload.document_type}' attached from Smart Vault. Awaiting officer sign-off."
+    ticket.official_notes = f"{doc_id_tag}Document '{payload.document_type}' attached from Smart Vault. Awaiting officer sign-off."
     db.commit()
-    return {"message": f"Successfully attached {payload.document_type} to {ticket.department.name} ticket!"}
+    return {"message": f"Successfully attached {payload.document_type} to ticket!"}
 
 @app.post("/certificates/generate/")
 def generate_master_clearance_certificate(
@@ -547,7 +554,6 @@ async def get_vault_documents(
 @app.get("/admin/tickets/pending/")
 def get_pending_tickets(db: Session = Depends(get_db)):
     try:
-        # Sorted from oldest to newest submission order
         tickets = db.query(models.DepartmentApproval).filter(
             models.DepartmentApproval.status == "In Review"
         ).order_by(models.DepartmentApproval.updated_at.asc()).all()
@@ -560,15 +566,29 @@ def get_pending_tickets(db: Session = Depends(get_db)):
             dept_name = ticket.department.name if hasattr(ticket, "department") and ticket.department else "General"
             
             lic_str = ticket.license_type or "General Approval"
+            doc_req_parsed = "Standard Document"
             if " | DOC_REQ: " in lic_str:
-                lic_str = lic_str.split(" | ")[0]
+                parts = lic_str.split(" | ")
+                lic_str = parts[0]
+                if len(parts) > 1:
+                    doc_req_parsed = parts[1].replace("DOC_REQ: ", "")
 
-            notes = getattr(ticket, "official_notes", None) or "Awaiting final sign-off."
+            notes = getattr(ticket, "official_notes", None) or ""
             
+            # Extract precise DOC_ID if stored in official notes during upload/attachment
             doc = None
-            if user:
+            if "DOC_ID:" in notes:
+                try:
+                    tag_part = notes.split("DOC_ID:")[1].split(" | ")[0]
+                    doc = db.query(models.Document).filter(models.Document.id == tag_part).first()
+                except Exception:
+                    pass
+            
+            # Fallback to user's most recent doc matching the required type if tag is missing
+            if not doc and user:
                 doc = db.query(models.Document).filter(
-                    models.Document.user_id == user.id
+                    models.Document.user_id == user.id,
+                    models.Document.document_type == doc_req_parsed
                 ).order_by(models.Document.created_at.desc()).first()
 
             doc_info = None
@@ -578,13 +598,16 @@ def get_pending_tickets(db: Session = Depends(get_db)):
                     "metadata": doc.ai_extracted_metadata
                 }
 
+            clean_notes = notes.split(" | ")[1] if "DOC_ID:" in notes and " | " in notes else notes
+
             results.append({
                 "ticket_id": str(ticket.id),
                 "applicant": user.full_name if user else "Unknown Business",
                 "department": dept_name,
                 "license_type": lic_str,
+                "required_document": doc_req_parsed,
                 "status": ticket.status,
-                "current_note": notes,
+                "current_note": clean_notes or "Awaiting final sign-off.",
                 "submitted_at": ticket.updated_at.strftime("%Y-%m-%d %H:%M UTC") if ticket.updated_at else "N/A",
                 "document": doc_info
             })

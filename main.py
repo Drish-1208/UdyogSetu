@@ -16,7 +16,6 @@ import auth
 
 app = FastAPI()
 
-# Create a local directory to actually store and serve the uploaded files
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
@@ -38,6 +37,26 @@ class DocumentVerificationResult(BaseModel):
     extracted_data: ExtractedData
     critical_flags: List[str] = Field(description="List of issues (e.g., blurry, expired, mismatched name). Empty if perfect.")
 
+# --- NEW: Dynamic AI Onboarding Schemas ---
+class ComplianceTicket(BaseModel):
+    department: str = Field(description="The issuing government department (e.g., Fire Department, MPCB).")
+    license_name: str = Field(description="The exact name of the license or approval required.")
+    required_document_type: str = Field(description="The primary physical document the user must upload to apply (e.g., Floor Plan, PAN Card, Lease Agreement).")
+    sla_days: int = Field(description="The maximum allowed processing time in days (Service Level Agreement).")
+
+class AIComplianceChecklist(BaseModel):
+    tickets: List[ComplianceTicket]
+
+class BusinessProfile(BaseModel):
+    business_name: str
+    sector: str
+    description: str
+    employee_count: int
+    investment_tier: str
+    factory_area_sqft: int
+    has_hazardous_chemicals: bool
+    high_water_usage: bool
+
 class UserCreate(BaseModel):
     full_name: str
     email: str
@@ -46,15 +65,6 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: str
     password: str
-
-class BusinessProfile(BaseModel):
-    sector: str
-    employee_count: int
-    has_hazardous_chemicals: bool
-
-class ApplicationCreate(BaseModel):
-    email: str
-    business_name: str = "My Enterprise"
 
 class DepartmentReview(BaseModel):
     approval_id: str
@@ -89,27 +99,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
-INDUSTRY_REQUIREMENTS = {
-    "food": ["FSSAI License", "Health Trade License", "Food & Drug Administration (FDA) NOC"],
-    "agriculture": ["FSSAI License", "Agri-Export Zone NOC"],
-    "textile": ["Textile Ministry Registration", "Effluent Treatment Plant (ETP) Approval"],
-    "manufacturing": ["Factory Inspectorate Clearance", "Boiler Registration"]
-}
-
-CONDITIONAL_REQUIREMENTS = [
-    {
-        "evaluator": lambda profile: profile.has_hazardous_chemicals,
-        "approvals": ["Fire Safety NOC", "Pollution Control Board (Red Category)"]
-    },
-    {
-        "evaluator": lambda profile: profile.employee_count >= 10,
-        "approvals": ["EPFO Registration", "ESIC Worker Insurance"]
-    },
-    {
-        "evaluator": lambda profile: profile.employee_count >= 50,
-        "approvals": ["Standing Orders Act Registration", "Workplace Creche Certification"]
-    }
-]
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 @app.get("/")
 def read_root():
@@ -139,7 +129,6 @@ def create_test_user(user_data: UserCreate, db: Session = Depends(get_db)):
     
     db.add(new_user)
     db.commit()
-    
     return {"message": "Success! User securely saved to Database.", "name": new_user.full_name}
 
 @app.get("/users/me/")
@@ -151,57 +140,95 @@ def get_user_profile(current_user: models.User = Depends(get_current_user)):
     }
 
 @app.post("/onboarding/")
-def generate_checklist(
+def generate_dynamic_checklist_and_apply(
     profile: BusinessProfile, 
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    required_approvals = {"Company Registration (MCA)", "GST Registration", "Shops & Establishment License"}
-    
-    sector_approvals = INDUSTRY_REQUIREMENTS.get(profile.sector.lower(), [])
-    required_approvals.update(sector_approvals)
-    
-    for rule in CONDITIONAL_REQUIREMENTS:
-        if rule["evaluator"](profile):
-            required_approvals.update(rule["approvals"])
-            
-    final_checklist = list(required_approvals)
-        
-    current_user.business_profile = profile.model_dump() 
+    current_user.business_profile = profile.model_dump()
     db.commit()
+    
+    # 1. Ask Gemini to generate a highly specific legal checklist based on the deep parameters
+    try:
+        model = genai.GenerativeModel('gemini-3.6-flash')
+        prompt = f"""
+        You are the Chief Regulatory AI for the Maharashtra Government MAITRI portal.
+        Analyze this business profile and generate the required government approvals.
+        Always include standard things like 'Company Registration (MCA)' and 'GST Registration'.
+        Then add specific approvals based on the profile:
+        - Sector: {profile.sector}
+        - Description: {profile.description}
+        - Employees: {profile.employee_count}
+        - Investment: {profile.investment_tier}
+        - Factory Area: {profile.factory_area_sqft} sqft
+        - Hazardous Chemicals: {profile.has_hazardous_chemicals}
+        - High Water Usage: {profile.high_water_usage}
+        """
         
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=AIComplianceChecklist,
+                temperature=0.2
+            )
+        )
+        ai_checklist = json.loads(response.text)
+        tickets = ai_checklist.get("tickets", [])
+        
+    except Exception as e:
+        print(f"AI Generation Failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate compliance checklist from AI Engine.")
+
+    # 2. Automatically create the Application and the Tickets
+    new_app = models.Application(
+        user_id=current_user.id,
+        project_name=profile.business_name,
+        status="Under Review"
+    )
+    db.add(new_app)
+    db.commit()
+    db.refresh(new_app)
+
+    for item in tickets:
+        dept_name = item.get("department", "General Department")
+        dept = db.query(models.Department).filter(models.Department.name == dept_name).first()
+        if not dept:
+            dept = models.Department(name=dept_name)
+            db.add(dept)
+            db.commit()
+            db.refresh(dept)
+
+        # We inject the document requirement and SLA directly into the license_type field so the frontend can read it
+        formatted_license_type = f"{item.get('license_name')} | DOC_REQ: {item.get('required_document_type')} | SLA: {item.get('sla_days')} Days"
+        
+        dept_ticket = models.DepartmentApproval(
+            application_id=new_app.id,
+            department_id=dept.id,         
+            license_type=formatted_license_type,
+            status="Pending Submission", # NEW STATUS
+            official_notes="Submit a document to proceed." 
+        )
+        db.add(dept_ticket)
+    
+    db.commit()
+
     return {
-        "message": "Checklist generated using scalable Rules Engine!",
-        "total_approvals_required": len(final_checklist),
-        "required_approvals": final_checklist
+        "message": "AI Checklist Generated and Application Submitted!",
+        "application_id": str(new_app.id),
+        "total_tickets": len(tickets)
     }
-
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-DOCUMENT_RULES = {
-    "Company Registration (MCA)": "Must contain a 21-character Corporate Identification Number (CIN) and be issued by the Ministry of Corporate Affairs or Registrar of Companies.",
-    "GST Registration": "Must contain a 15-character GSTIN. Ensure it explicitly states 'Goods and Services Tax'.",
-    "Fire NOC": "Must be issued by Maharashtra Fire Services or a local municipal fire brigade. Must clearly state 'No Objection Certificate' for fire safety.",
-    "Environmental Clearance": "Must be issued by the Maharashtra Pollution Control Board (MPCB) or SEIAA. Look for 'Consent to Establish' or 'Consent to Operate' clauses.",
-    "Identity Proof": "Valid IDs include PAN Card, Passport, or Voter ID. Note: Indian PAN Cards do not have expiry dates.",
-    "Property Lease Agreement": "Must include names of lessor and lessee, property address, and ideally a Maharashtra stamp duty seal or e-registration mark."
-}
 
 def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: str):
     try:
         model = genai.GenerativeModel('gemini-3.6-flash')
-        specific_rule = DOCUMENT_RULES.get(document_type, "Perform standard government document verification.")
-        
         prompt = f"""
-        You are an elite, automated Screening Agent for the MAITRI Single Window Clearance portal of the Maharashtra Government.
-        The user claims this document is a: '{document_type}'.
-        
-        YOUR SPECIFIC SCREENING RULE FOR THIS DOCUMENT:
-        {specific_rule}
+        You are an elite, automated Screening Agent for the MAITRI Single Window Clearance portal.
+        The user claims this document satisfies the requirement for: '{document_type}'.
         
         GENERAL RULES:
-        1. STRICT MATCH: If the document violates the specific rule above, or is clearly NOT a '{document_type}', you MUST set is_valid to false and explain exactly why in the screening_status.
-        2. ANTI-FRAUD CHECK: If the image is heavily blurred, cut off, unreadable, or shows signs of digital tampering (e.g., mismatched fonts), set is_valid to false.
+        1. STRICT MATCH: Check if the document matches the required context of '{document_type}'. If it is completely irrelevant, set is_valid to false and explain why.
+        2. ANTI-FRAUD CHECK: If the image is heavily blurred, cut off, unreadable, or tampered with, set is_valid to false.
         3. SMART DATA EXTRACTION: Extract the primary ID/Certificate number, issue date, and expiry date if present. 
         """
         
@@ -213,17 +240,12 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
                 temperature=0.0
             )
         )
-        
         return json.loads(response.text)
         
     except Exception as e:
-        print(f"AI Engine Error: {e}")
         return {
-            "is_valid": False, 
-            "confidence_score": 0.0, 
-            "screening_status": "Processing Failed",
-            "extracted_data": {}, 
-            "critical_flags": ["AI processing failed or file unreadable."]
+            "is_valid": False, "confidence_score": 0.0, "screening_status": "Processing Failed",
+            "extracted_data": {}, "critical_flags": ["AI processing failed or file unreadable."]
         }
 
 @app.post("/documents/upload/")
@@ -243,15 +265,11 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Invalid file type.")
 
     file_bytes = await file.read()
-    
-    # Save file physically to the uploads directory
     file_path = f"uploads/{file.filename}"
     with open(file_path, "wb") as f:
         f.write(file_bytes)
         
-    # Create the real active URL
     real_url = f"http://127.0.0.1:8000/uploads/{file.filename}"
-    
     ai_analysis = analyze_document_with_ai(document_type, file_bytes, file.content_type)
     
     auto_status = "Rejected"
@@ -273,10 +291,10 @@ async def upload_document(
             if ticket:
                 if auto_status == "In Review":
                     ticket.status = "In Review"
-                    ticket.officer_comments = f"AI Screening Passed for {document_type}. Awaiting final human officer sign-off."
+                    ticket.official_notes = f"AI Screening Passed for {document_type}. Awaiting final human officer sign-off."
                 else:
-                    ticket.status = "Pending" if ticket.status == "Rejected" else ticket.status
-                    ticket.officer_comments = f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}. Please upload a correct, clear document."
+                    ticket.status = "Rejected"
+                    ticket.official_notes = f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}. Please upload a clear document."
         except Exception as e:
             print(f"Skipping ticket lookup: {e}")
 
@@ -287,52 +305,6 @@ async def upload_document(
         "document_type": document_type,
         "status": auto_status,
         "extracted_metadata": ai_analysis
-    }
-
-@app.post("/applications/submit/")
-def submit_application(data: ApplicationCreate, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == data.email).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-    
-    if not user.business_profile or "sector" not in user.business_profile:
-        raise HTTPException(status_code=400, detail="Please complete the onboarding checklist first.")
-
-    required_approvals = {"Company Registration (MCA)", "GST Registration", "Shops & Establishment License"}
-    sector_approvals = INDUSTRY_REQUIREMENTS.get(user.business_profile.get("sector", "").lower(), [])
-    required_approvals.update(sector_approvals)
-    
-    new_app = models.Application(
-        user_id=user.id,
-        project_name=data.business_name,
-        status="Under Review"
-    )
-    db.add(new_app)
-    db.commit()
-    db.refresh(new_app)
-
-    for approval_name in required_approvals:
-        dept = db.query(models.Department).filter(models.Department.name == approval_name).first()
-        if not dept:
-            dept = models.Department(name=approval_name)
-            db.add(dept)
-            db.commit()
-            db.refresh(dept)
-
-        dept_ticket = models.DepartmentApproval(
-            application_id=new_app.id,
-            department_id=dept.id,         
-            status="Pending",
-            official_notes="Awaiting officer review." 
-        )
-        db.add(dept_ticket)
-    
-    db.commit()
-
-    return {
-        "message": "Application submitted successfully to all departments in parallel!",
-        "application_id": str(new_app.id),
-        "departments_notified": len(required_approvals)
     }
 
 @app.get("/applications/my-applications/")
@@ -356,12 +328,7 @@ def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = D
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     
     access_token = auth.create_access_token(data={"sub": user.email})
-    
-    return {
-        "access_token": access_token, 
-        "token_type": "bearer",
-        "message": "Login successful!"
-    }
+    return {"access_token": access_token, "token_type": "bearer", "message": "Login successful!"}
 
 @app.get("/dashboard/my-status/")
 def get_secure_dashboard(app_id: Optional[str] = None, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -375,16 +342,31 @@ def get_secure_dashboard(app_id: Optional[str] = None, current_user: models.User
 
     department_tickets = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.application_id == application.id).order_by(models.DepartmentApproval.status.desc()).all()
 
-    dashboard_data = [
-        {
+    dashboard_data = []
+    for ticket in department_tickets:
+        # Unpack the injected string if it exists
+        lic_str = ticket.license_type or "General Approval"
+        doc_req = "Standard Document"
+        sla = "N/A"
+        
+        if " | DOC_REQ: " in lic_str:
+            parts = lic_str.split(" | ")
+            lic_str = parts[0]
+            if len(parts) > 1:
+                doc_req = parts[1].replace("DOC_REQ: ", "")
+            if len(parts) > 2:
+                sla = parts[2].replace("SLA: ", "")
+
+        dashboard_data.append({
             "ticket_id": str(ticket.id),
             "department": ticket.department.name, 
+            "license_name": lic_str,
+            "document_required": doc_req,
+            "sla": sla,
             "status": ticket.status,
             "officer_comments": ticket.official_notes, 
             "last_updated": ticket.updated_at
-        }
-        for ticket in department_tickets
-    ]
+        })
 
     return {
         "applicant": current_user.full_name,
@@ -467,14 +449,19 @@ def get_pending_tickets(db: Session = Depends(get_db)):
             app_record = db.query(models.Application).filter(models.Application.id == ticket.application_id).first()
             user = db.query(models.User).filter(models.User.id == app_record.user_id).first() if app_record else None
             
-            dept_name = ticket.department.name if hasattr(ticket, "department") and ticket.department else ticket.license_type
+            dept_name = ticket.department.name if hasattr(ticket, "department") and ticket.department else "General"
+            
+            lic_str = ticket.license_type or "General Approval"
+            if " | DOC_REQ: " in lic_str:
+                lic_str = lic_str.split(" | ")[0]
+
             notes = getattr(ticket, "official_notes", None) or "Awaiting final sign-off."
             
             doc = None
             if user:
+                # Get the most recent doc matching the department or license type
                 doc = db.query(models.Document).filter(
-                    models.Document.user_id == user.id,
-                    models.Document.document_type == dept_name
+                    models.Document.user_id == user.id
                 ).order_by(models.Document.created_at.desc()).first()
 
             doc_info = None
@@ -488,6 +475,7 @@ def get_pending_tickets(db: Session = Depends(get_db)):
                 "ticket_id": str(ticket.id),
                 "applicant": user.full_name if user else "Unknown Business",
                 "department": dept_name,
+                "license_type": lic_str,
                 "status": ticket.status,
                 "current_note": notes,
                 "document": doc_info

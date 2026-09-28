@@ -6,6 +6,7 @@ API_URL = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title="Udyog Setu Maharashtra", layout="wide", initial_sidebar_state="expanded")
 
+# CSS Injection for Full-Page Dark Theme, Glassmorphism, and Animations
 st.markdown("""
 <style>
 /* Overall dark theme setup & Header */
@@ -88,7 +89,8 @@ div[data-baseweb="select"] > div,
 div[data-baseweb="select"] div[role="button"],
 div[data-baseweb="base-input"] > input,
 div[data-baseweb="base-input"],
-div[data-baseweb="input"] {
+div[data-baseweb="input"],
+textarea[data-baseweb="textarea"] {
     background-color: rgba(30, 34, 43, 0.6) !important;
     border-color: rgba(255, 255, 255, 0.1) !important;
     color: #ffffff !important;
@@ -96,7 +98,8 @@ div[data-baseweb="input"] {
     transition: all 0.3s ease;
 }
 div[data-baseweb="base-input"] > input:focus,
-div[data-baseweb="input"]:focus-within {
+div[data-baseweb="input"]:focus-within,
+textarea[data-baseweb="textarea"]:focus {
     border-color: #4CAF50 !important;
     box-shadow: 0 0 8px rgba(76, 175, 80, 0.5) !important;
 }
@@ -396,47 +399,63 @@ def onboarding_flow():
     
     with main_col:
         st.title("Apply for New Business")
-        st.markdown("Let's figure out exactly which licenses you need to operate in Maharashtra.")
+        st.markdown("Provide detailed information about your enterprise. Our AI will automatically generate the exact legal compliance tickets required for your operation.")
         
         with st.form("onboarding_form"):
+            st.subheader("1. General Information")
             business_name = st.text_input("Business Name", placeholder="e.g., Global Tech Solutions")
-            sector = st.selectbox("Business Sector", ["Food", "Agriculture", "Textile", "Manufacturing", "IT/Tech", "Other"])
-            employee_count = st.number_input("Estimated Number of Employees", min_value=1, value=5)
-            hazardous = st.checkbox("Will your facility handle hazardous chemicals?")
+            sector = st.selectbox("Business Sector", ["Food & Beverage", "Agriculture", "Textile & Garments", "Heavy Manufacturing", "IT/Tech", "Pharmaceuticals", "Other"])
+            description = st.text_area("Brief Description of Business Operations", placeholder="e.g., We manufacture and export woven cotton garments...")
             
-            submitted = st.form_submit_button("Generate Required Checklist", type="primary", use_container_width=True)
+            st.subheader("2. Operational Scale")
+            col1, col2 = st.columns(2)
+            with col1:
+                employee_count = st.number_input("Estimated Number of Employees", min_value=1, value=5)
+                factory_area_sqft = st.number_input("Facility/Factory Area (in sq. ft.)", min_value=100, value=1500)
+            with col2:
+                investment_tier = st.selectbox("Total Investment Tier", ["Micro (< ₹1 Crore)", "Small (₹1 - ₹10 Crore)", "Medium (₹10 - ₹50 Crore)", "Large (> ₹50 Crore)"])
+            
+            st.subheader("3. Environmental Factors")
+            col3, col4 = st.columns(2)
+            with col3:
+                hazardous = st.checkbox("Will your facility handle hazardous chemicals or emissions?")
+            with col4:
+                water_usage = st.checkbox("Requires high ground-water usage or produces chemical effluent?")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            submitted = st.form_submit_button("Generate AI Compliance Checklist & Apply", type="primary", use_container_width=True)
             
             if submitted:
-                if not business_name:
-                    st.warning("Please enter a Business Name.")
+                if not business_name or not description:
+                    st.warning("Please fill in the Business Name and Description.")
                 else:
                     payload = {
+                        "business_name": business_name,
                         "sector": sector,
+                        "description": description,
                         "employee_count": employee_count,
-                        "has_hazardous_chemicals": hazardous
+                        "investment_tier": investment_tier,
+                        "factory_area_sqft": factory_area_sqft,
+                        "has_hazardous_chemicals": hazardous,
+                        "high_water_usage": water_usage
                     }
                     headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
                     
-                    response = requests.post(f"{API_URL}/onboarding/", json=payload, headers=headers)
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        st.success(data["message"])
-                        st.info(f"You require **{data['total_approvals_required']}** total approvals.")
+                    with st.spinner("AI Gatekeeper is reading Maharashtra State laws to generate your checklist..."):
+                        response = requests.post(f"{API_URL}/onboarding/", json=payload, headers=headers)
                         
-                        app_payload = {"email": st.session_state["user_name"], "business_name": business_name} 
-                        app_response = requests.post(f"{API_URL}/applications/submit/", json=app_payload, headers=headers)
-                        
-                        if app_response.status_code == 200:
+                        if response.status_code == 200:
+                            data = response.json()
+                            st.success("Successfully generated compliance tickets via AI!")
+                            st.info(f"You require **{data['total_tickets']}** approvals across various departments.")
                             st.balloons()
-                            st.success("Master application generated! Switching to dashboard...")
-                            new_app_data = app_response.json()
-                            st.session_state["active_app_id"] = new_app_data.get("application_id")
+                            
+                            st.session_state["active_app_id"] = data.get("application_id")
                             time.sleep(2)
                             st.session_state["page"] = "applicant"
                             st.rerun()
-                    else:
-                        st.error("Failed to generate checklist.")
+                        else:
+                            st.error("Failed to generate checklist. Ensure backend is running.")
 
 def applicant_dashboard():
     headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
@@ -486,41 +505,45 @@ def applicant_dashboard():
                 elif "review" in status_lower:
                     progress_val = 75
                     status_alert = st.warning
-                elif "pending" in status_lower:
+                elif "pending submission" in status_lower:
                     progress_val = 25
+                    status_alert = st.info
+                elif "pending" in status_lower:
+                    progress_val = 50
                     status_alert = st.warning
                 else:
-                    progress_val = 50
+                    progress_val = 10
                     status_alert = st.error
 
-                needs_action = ticket['status'] in ['Pending', 'Rejected']
+                needs_upload = "pending submission" in status_lower or "rejected" in status_lower
 
-                with st.expander(f"{ticket['department']} - {ticket['status']}", expanded=needs_action):
-                    st.caption(f"Last Updated: {ticket['last_updated']}")
+                with st.expander(f"{ticket['department']} - {ticket['license_name']}", expanded=needs_upload):
+                    st.caption(f"SLA: {ticket.get('sla', 'N/A')} | Last Updated: {ticket['last_updated'][:10]}")
                     
                     if ticket['officer_comments']:
                         status_alert(f"Status: {ticket['status']} | Note: {ticket['officer_comments']}")
                     else:
-                        status_alert(f"Status: {ticket['status']} | Note: Awaiting review from department officer.")
+                        status_alert(f"Status: {ticket['status']}")
                     
                     st.progress(progress_val, text="Department Processing Stage")
                     
-                    if needs_action:
+                    # Upload UI specifically for tickets waiting on the user
+                    if needs_upload:
                         st.divider()
-                        st.write(f"**Upload requirement: {ticket['department']}**")
+                        st.write(f"**Required Document:** {ticket.get('document_required', 'Standard Document')}")
                         uploaded_file = st.file_uploader(
                             "Attach clear, legible document", 
                             type=["pdf", "png", "jpg", "jpeg"], 
                             key=f"upload_{ticket['ticket_id']}"
                         )
                         
-                        if st.button("Run AI Security Scan", key=f"scan_{ticket['ticket_id']}", use_container_width=True, type="primary"):
+                        if st.button("Run AI Security Scan & Submit", key=f"scan_{ticket['ticket_id']}", use_container_width=True, type="primary"):
                             if uploaded_file is not None:
                                 with st.spinner("AI Gatekeeper is analyzing the document..."):
                                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
                                     data_payload = {
                                         "email": st.session_state.get("user_name", ""),
-                                        "document_type": ticket['department'], 
+                                        "document_type": ticket.get('document_required', ticket['department']), 
                                         "ticket_id": ticket['ticket_id']
                                     }
                                     
@@ -554,7 +577,8 @@ def applicant_dashboard():
                     "GST Registration", 
                     "Fire NOC", 
                     "Environmental Clearance",
-                    "Property Lease Agreement"
+                    "Property Lease Agreement",
+                    "Floor Plan"
                 ], key="vault_doc_type")
                 
                 vault_file = st.file_uploader("Upload PDF or Image", type=["pdf", "png", "jpg", "jpeg"], key="vault_file_uploader")
@@ -656,6 +680,7 @@ def government_analytics():
                         with ticket_col:
                             st.subheader(f"{t['applicant']}")
                             st.write(f"**Department:** {t['department']}")
+                            st.write(f"**Approval Type:** {t.get('license_type', 'General')}")
                             
                             status_lower = t['status'].lower()
                             if "approved" in status_lower:
@@ -713,7 +738,6 @@ def government_analytics():
                                 st.divider()
                                 file_url = doc_info.get("file_url", "#")
                                 
-                                # Functional direct download/view link instead of hiding the file
                                 st.markdown(f"**Original File:** <a href='{file_url}' target='_blank' style='color:#4CAF50; font-weight:bold; text-decoration:none;'>Open Document in New Tab</a>", unsafe_allow_html=True)
                             else:
                                 st.info("No document explicitly attached to this specific department requirement yet.")

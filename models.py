@@ -97,7 +97,7 @@ class DepartmentApproval(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     application_id = Column(UUID(as_uuid=True), ForeignKey('applications.id'), nullable=False)
     department_id = Column(UUID(as_uuid=True), ForeignKey('departments.id'), nullable=False)
-    license_type = Column(String(100))
+    license_type = Column(String(255))
     status = Column(String(50), default='Pending')
     official_notes = Column(Text, nullable=True)
     assigned_official_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)

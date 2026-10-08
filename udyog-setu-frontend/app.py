@@ -462,6 +462,8 @@ def onboarding_flow():
                             time.sleep(2)
                             st.session_state["page"] = "applicant"
                             st.rerun()
+                        else:
+                            st.error(f"Failed to generate checklist. The server returned an error: {response.status_code}")
 
 def applicant_dashboard():
     headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}

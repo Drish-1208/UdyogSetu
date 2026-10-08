@@ -209,7 +209,7 @@ def generate_dynamic_checklist_and_apply(
         dept_ticket = models.DepartmentApproval(
             application_id=new_app.id,
             department_id=dept.id,         
-            license_type=formatted_license_type,
+            license_type=formatted_license_type[:100],
             status="Pending Submission",
             official_notes="Submit a document to proceed." 
         )
@@ -223,15 +223,21 @@ def generate_dynamic_checklist_and_apply(
         "total_tickets": len(tickets)
     }
 
-def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: str):
+def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: str, expected_owner: str = "", expected_business: str = ""):
     try:
         model = genai.GenerativeModel('gemini-3.6-flash')
         prompt = f"""
         You are an elite, automated Screening Agent for the MAITRI Single Window Clearance portal.
         The user claims this document satisfies the requirement for: '{document_type}'.
         
+        EXPECTED MATCHING DETAILS:
+        - Proprietor/Owner Name: {expected_owner}
+        - Business/Enterprise Name: {expected_business}
+        
         GENERAL RULES:
-        1. STRICT MATCH: Check if the document matches the required context of '{document_type}'. If completely irrelevant, set is_valid to false.
+        1. STRICT MATCH & CROSS-REFERENCE: Check if the document matches the required context of '{document_type}'. 
+           Cross-reference the names extracted from the document against the EXPECTED MATCHING DETAILS. 
+           If the names match, increase the confidence_score significantly. If there is a severe mismatch, lower the score or reject it.
         2. ANTI-FRAUD CHECK: If the image is heavily blurred, cut off, unreadable, or tampered with, set is_valid to false.
         3. SMART DATA EXTRACTION: Extract the primary ID/Certificate number, issue date, and expiry date if present.
         """
@@ -251,7 +257,6 @@ def analyze_document_with_ai(document_type: str, file_bytes: bytes, mime_type: s
             "is_valid": False, "confidence_score": 0.0, "screening_status": "Processing Failed",
             "extracted_data": {}, "critical_flags": ["AI processing failed or file unreadable."]
         }
-
 @app.post("/documents/upload/")
 async def upload_document(
     email: str = Form(...),
@@ -275,7 +280,13 @@ async def upload_document(
         f.write(file_bytes)
         
     real_url = f"http://127.0.0.1:8000/uploads/{file.filename}"
-    ai_analysis = analyze_document_with_ai(document_type, file_bytes, file.content_type)
+    
+    # Extract expected details for cross-matching
+    expected_owner = user.full_name
+    expected_business = user.business_profile.get("business_name", "") if user.business_profile else ""
+    
+    # Pass details to AI
+    ai_analysis = analyze_document_with_ai(document_type, file_bytes, file.content_type, expected_owner, expected_business)
     
     auto_status = "Rejected"
     if ai_analysis.get("is_valid") and ai_analysis.get("confidence_score", 0) > 0.85:
@@ -296,10 +307,8 @@ async def upload_document(
         try:
             ticket = db.query(models.DepartmentApproval).filter(models.DepartmentApproval.id == ticket_id).first()
             if ticket:
-                # Map this specific document ID to the ticket so officers see the right file
-                ticket.assigned_official_id = user.id # placeholder linkage or we can store in official notes/metadata
-                # Alternatively, let's link the document via application_documents or store reference
-                ticket.official_notes = f"DOC_ID:{str(new_document.id)} | " + (f"AI Screening Passed for {document_type}. Awaiting final human officer sign-off." if auto_status == "In Review" else f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}.")
+                ticket.assigned_official_id = user.id 
+                ticket.official_notes = f"DOC_ID:{str(new_document.id)} | " + (f"AI Screening Passed for {document_type} (Score: {ai_analysis.get('confidence_score')}). Awaiting final human officer sign-off." if auto_status == "In Review" else f"AI Rejected {document_type}: {ai_analysis.get('screening_status')}.")
                 ticket.status = "In Review" if auto_status == "In Review" else "Rejected"
         except Exception as e:
             print(f"Skipping ticket lookup: {e}")
@@ -312,7 +321,6 @@ async def upload_document(
         "status": auto_status,
         "extracted_metadata": ai_analysis
     }
-
 @app.post("/tickets/attach-vault/")
 def attach_vault_to_ticket(
     payload: AttachVaultRequest, 
